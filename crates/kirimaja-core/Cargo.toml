@@ -1,0 +1,19 @@
+[package]
+name = "kirimaja-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core engine for KirimAja file transfer with resume support"
+authors = ["KirimAja Team"]
+
+[dependencies]
+localsend-rs = { path = "../localsend-rs", default-features = false, features = ["https"] }
+tokio = { version = "1.49", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+async-trait = "0.1"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }

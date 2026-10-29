@@ -1,0 +1,14 @@
+//! KirimAja Core - High performance, resilient local LAN file transfer engine.
+//!
+//! Built on top of the LocalSend v2 protocol with extensions for:
+//! - Offset-based resume support
+//! - Resumable storage sinks with state journal
+//! - Background task coordination for iOS & Tauri
+
+pub use localsend_rs;
+
+pub mod resume;
+
+pub use resume::{
+    KIRIMAJA_RESUME_OFFSET_HEADER, ResumeEntry, ResumeInfoResponse, ResumeJournal,
+};

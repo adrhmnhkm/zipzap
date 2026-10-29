@@ -1,0 +1,37 @@
+services:
+  receiver:
+    image: localsend-rs-e2e
+    build:
+      # File-v3 makes this vendor depend on the open workspace File service.
+      # Build from the repository root so Docker can copy only that declared
+      # path-dependency closure; the runtime image still contains one vendor
+      # LocalSend binary.
+      context: ../../..
+      dockerfile: vendors/localsend-rs/e2e/docker/localsend-rs.Dockerfile
+    volumes:
+      - shared:/shared
+      - ./scripts:/e2e:ro
+    command: ["/bin/sh", "/e2e/receiver.sh"]
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:53317/api/localsend/v2/info"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  sender:
+    image: localsend-rs-e2e
+    build:
+      context: ../../..
+      dockerfile: vendors/localsend-rs/e2e/docker/localsend-rs.Dockerfile
+    environment:
+      PAYLOAD_KB: "10240"   # 10 MB
+    volumes:
+      - shared:/shared
+      - ./scripts:/e2e:ro
+    depends_on:
+      receiver:
+        condition: service_healthy
+    command: ["/bin/sh", "/e2e/sender.sh"]
+
+volumes:
+  shared:

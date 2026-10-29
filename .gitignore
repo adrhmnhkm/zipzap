@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Tauri / Frontend
+node_modules/
+dist/
+
+# Logs & temp
+*.log
+*.tmp
+
+# OS
+Thumbs.db
+.DS_Store
