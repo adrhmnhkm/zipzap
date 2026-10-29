@@ -11,42 +11,55 @@ use localsend_rs::server::{LocalSendServer, ServerEvent};
 use tauri::Emitter;
 use tokio::sync::RwLock;
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let _ = tracing_subscriber::fmt::try_init();
 
     // Default download directory: Downloads/KirimAja
     let default_dir = dirs_or_fallback();
-    let _ = tokio::fs::create_dir_all(&default_dir).await;
+    let _ = std::fs::create_dir_all(&default_dir);
 
     let save_dir = Arc::new(RwLock::new(default_dir.clone()));
-
-    // Initialize resume journal and resumable file sink
-    let journal = ResumeJournal::open(&default_dir).expect("Failed to initialize resume journal");
-    let sink = Arc::new(ResumableFileSink::new(journal));
-
     let server_alias = format!("KirimAja Laptop ({})", whoami());
 
-    // Spawn KirimAja receiver server in background
-    let (server, mut events) = LocalSendServer::builder()
-        .alias(server_alias.clone())
-        .port(53317)
-        .save_dir(&default_dir)
-        .protocol(Protocol::Http)
-        .auto_accept(true)
-        .sink(sink)
-        .build()
-        .await
-        .expect("Failed to bind KirimAja server on port 53317");
+    let server_save_dir = default_dir.clone();
+    let server_alias_clone = server_alias.clone();
 
-    let port = server.port();
-    tracing::info!("KirimAja receiver listening on port {}", port);
-
-    // Launch Tauri desktop GUI
+    // Launch Tauri desktop GUI with synchronous OS event loop on the main thread
     tauri::Builder::default()
         .setup(move |app| {
             let handle = app.handle().clone();
-            tokio::spawn(async move {
+
+            // Spawn asynchronous background receiver server in Tauri runtime
+            tauri::async_runtime::spawn(async move {
+                let journal = match ResumeJournal::open(&server_save_dir) {
+                    Ok(j) => j,
+                    Err(e) => {
+                        tracing::error!("Failed to initialize resume journal: {}", e);
+                        return;
+                    }
+                };
+                let sink = Arc::new(ResumableFileSink::new(journal));
+
+                let (server, mut events) = match LocalSendServer::builder()
+                    .alias(server_alias_clone)
+                    .port(53317)
+                    .save_dir(&server_save_dir)
+                    .protocol(Protocol::Http)
+                    .auto_accept(true)
+                    .sink(sink)
+                    .build()
+                    .await
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::error!("Failed to bind KirimAja server on port 53317: {}", e);
+                        return;
+                    }
+                };
+
+                let port = server.port();
+                tracing::info!("KirimAja receiver listening on port {}", port);
+
                 while let Some(event) = events.recv().await {
                     match event {
                         ServerEvent::FileReceiveProgress {
@@ -76,11 +89,12 @@ async fn main() {
                     }
                 }
             });
+
             Ok(())
         })
         .manage(AppState {
             alias: server_alias,
-            port,
+            port: 53317,
             save_dir,
         })
         .invoke_handler(tauri::generate_handler![
