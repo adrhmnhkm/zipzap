@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 /// High-level device representation exposed to mobile frontends (SwiftUI / Kotlin).

@@ -5,6 +5,7 @@ use localsend_rs::server::LocalSendServer;
 use serde_json::json;
 
 async fn wait_for_server(port: u16) {
+    localsend_rs::crypto::ensure_crypto_provider();
     for _ in 0..50 {
         if let Ok(resp) = reqwest::Client::new()
             .get(format!("http://127.0.0.1:{port}/api/localsend/v2/info"))
