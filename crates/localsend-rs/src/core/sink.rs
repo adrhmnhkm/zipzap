@@ -78,6 +78,18 @@ pub trait ReceiveSink: Send + Sync + 'static {
         save_dir: &Path,
         file_name: &str,
     ) -> Result<Box<dyn PendingReceive>, SinkError>;
+
+    /// Optional resume-aware destination creation.
+    /// Embedders that support offset-based resuming implement this.
+    async fn create_resumable(
+        &self,
+        save_dir: &Path,
+        file_name: &str,
+        _file_id: &str,
+        _offset: u64,
+    ) -> Result<Box<dyn PendingReceive>, SinkError> {
+        self.create(save_dir, file_name).await
+    }
 }
 
 /// A destination that exists but is not yet the file anybody can see.
@@ -100,6 +112,12 @@ pub trait PendingReceive: Send {
 
     /// Throw the partial away and release the reserved name.
     async fn abort(self: Box<Self>) -> Result<(), SinkError>;
+
+    /// Preserve partial progress on interrupted transfer rather than discarding.
+    /// Defaults to calling `abort()`.
+    async fn preserve_partial(self: Box<Self>, _bytes_written: u64) -> Result<(), SinkError> {
+        self.abort().await
+    }
 }
 
 /// The default sink: reserve the name, write beside it, publish by rename.
@@ -237,7 +255,7 @@ impl Drop for AtomicPendingFile {
 /// a symlink between the check here and the open below. Closing that needs
 /// held descriptors, which is what an embedder's sink brings — see the module
 /// docs.
-async fn walk_or_create_directory(root: &Path, directory: &Path) -> Result<(), SinkError> {
+pub async fn walk_or_create_directory(root: &Path, directory: &Path) -> Result<(), SinkError> {
     let relative = directory
         .strip_prefix(root)
         .map_err(|_| SinkError::Rejected("a destination outside the receive root".to_string()))?;
@@ -270,7 +288,7 @@ async fn walk_or_create_directory(root: &Path, directory: &Path) -> Result<(), S
 
 /// Create the first free name in the `name`, `name (1)`, `name (2)` … series,
 /// exclusively, and hand back the path that now exists.
-async fn reserve_free_name(directory: &Path, leaf: &str) -> Result<(PathBuf, String), SinkError> {
+pub async fn reserve_free_name(directory: &Path, leaf: &str) -> Result<(PathBuf, String), SinkError> {
     for attempt in 0..=MAX_COLLISION_ATTEMPTS {
         let candidate = if attempt == 0 {
             leaf.to_string()

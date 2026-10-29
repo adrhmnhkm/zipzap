@@ -494,6 +494,7 @@ impl ReceiveProgressContext {
 pub(crate) async fn handle_upload(
     State(state_ref): State<Arc<RwLock<ServerState>>>,
     Query(params): Query<UploadParams>,
+    headers: HeaderMap,
     body: Body,
 ) -> Response {
     let mut state = state_ref.write().await;
@@ -657,12 +658,18 @@ pub(crate) async fn handle_upload(
     // pinned receiver-selected root.
     drop(state);
 
+    let resume_offset = headers
+        .get("X-KirimAja-Resume-Offset")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+
     // The sink's error is classified rather than opaque, because the two halves
     // land on different status codes and the LocalSend spec's upload table
     // treats them as different things: 400 is "you sent something wrong", 500
     // is "this receiver broke". Collapsing them would tell a sender that named
     // `../../etc/passwd` to retry.
-    let mut pending = match sink.create(&save_dir, &file_name).await {
+    let mut pending = match sink.create_resumable(&save_dir, &file_name, &params.file_id.0, resume_offset).await {
         Ok(pending) => pending,
         Err(crate::core::SinkError::Rejected(reason)) => {
             tracing::warn!(%reason, "Upload rejected: unusable remote file name {file_name:?}");
@@ -707,19 +714,21 @@ pub(crate) async fn handle_upload(
     };
     let body = match body_result {
         None => {
-            progress.rollback(file_reported.load(Ordering::Relaxed));
-            tracing::info!(%session_id, "Upload cancelled before publication");
-            if let Err(cleanup_error) = pending.abort().await {
-                tracing::error!(%cleanup_error, "Failed to clean up cancelled upload");
+            let written = file_reported.load(Ordering::Relaxed);
+            progress.rollback(written);
+            tracing::info!(%session_id, "Upload cancelled or interrupted before publication");
+            if let Err(cleanup_error) = pending.preserve_partial(resume_offset + written).await {
+                tracing::error!(%cleanup_error, "Failed to preserve partial upload");
             }
             return StatusCode::CONFLICT.into_response();
         }
         Some(Ok(outcome)) => outcome,
         Some(Err(e)) => {
-            progress.rollback(file_reported.load(Ordering::Relaxed));
+            let written = file_reported.load(Ordering::Relaxed);
+            progress.rollback(written);
             tracing::error!("Failed to save file to {:?}: {}", save_path, e);
-            if let Err(cleanup_error) = pending.abort().await {
-                tracing::error!(%cleanup_error, "Failed to clean up rejected upload");
+            if let Err(cleanup_error) = pending.preserve_partial(resume_offset + written).await {
+                tracing::error!(%cleanup_error, "Failed to preserve partial upload on error");
             }
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
@@ -730,20 +739,22 @@ pub(crate) async fn handle_upload(
     // prepare-upload. A truncated body (network cut, or a misbehaving client
     // that illegally splits the upload into multiple POSTs) would otherwise
     // be saved as a partial file and the session wrongly marked complete.
-    // On any mismatch: discard the partial, return 500 ("Unknown error by
+    // On any mismatch: discard/preserve the partial, return 500 ("Unknown error by
     // receiver", per the LocalSend v2.1 spec's upload error table), and leave
     // the session untouched so it is neither recorded nor completed -- the
     // sender can retry the same file id against the still-open session.
-    if body_len != declared_size {
+    let total_written = body_len + resume_offset;
+    if total_written != declared_size {
         progress.rollback(body_len);
         tracing::warn!(
-            "Upload size mismatch for {:?}: declared {} bytes, received {} bytes; discarding partial",
+            "Upload size mismatch for {:?}: declared {} bytes, received {} (+ offset {}) bytes; preserving partial",
             save_path,
             declared_size,
-            body_len
+            body_len,
+            resume_offset
         );
-        if let Err(cleanup_error) = pending.abort().await {
-            tracing::error!(%cleanup_error, "Failed to clean up size-mismatched upload");
+        if let Err(cleanup_error) = pending.preserve_partial(total_written).await {
+            tracing::error!(%cleanup_error, "Failed to preserve size-mismatched upload");
         }
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -751,21 +762,23 @@ pub(crate) async fn handle_upload(
     // When the sender advertised a sha256, verify the bytes on disk match it
     // (case-insensitive hex). Size can be right while the contents are
     // corrupt; reject those the same way.
-    if let Some(expected_sha) = declared_sha
-        && !body.sha256.eq_ignore_ascii_case(&expected_sha)
-    {
-        let actual = &body.sha256;
-        progress.rollback(body_len);
-        tracing::warn!(
-            "Upload sha256 mismatch for {:?}: declared {}, computed {}; discarding",
-            save_path,
-            expected_sha,
-            actual
-        );
-        if let Err(cleanup_error) = pending.abort().await {
-            tracing::error!(%cleanup_error, "Failed to clean up hash-mismatched upload");
+    if resume_offset == 0 {
+        if let Some(expected_sha) = declared_sha
+            && !body.sha256.eq_ignore_ascii_case(&expected_sha)
+        {
+            let actual = &body.sha256;
+            progress.rollback(body_len);
+            tracing::warn!(
+                "Upload sha256 mismatch for {:?}: declared {}, computed {}; discarding",
+                save_path,
+                expected_sha,
+                actual
+            );
+            if let Err(cleanup_error) = pending.abort().await {
+                tracing::error!(%cleanup_error, "Failed to clean up hash-mismatched upload");
+            }
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
 
     let Some(publication) = receive_lease.begin_publication() else {
@@ -960,6 +973,47 @@ pub(crate) async fn handle_cancel(
     }
 
     StatusCode::OK.into_response()
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ResumeInfoParams {
+    pub file_id: String,
+}
+
+pub(crate) async fn handle_resume_info(
+    State(state_ref): State<Arc<RwLock<ServerState>>>,
+    Query(params): Query<ResumeInfoParams>,
+) -> Response {
+    let state = state_ref.read().await;
+    let save_dir = state.save_dir.clone();
+    drop(state);
+
+    let journal_path = save_dir.join(".kirimaja_journal.json");
+    if journal_path.exists() {
+        if let Ok(data) = tokio::fs::read_to_string(&journal_path).await {
+            if let Ok(entries) =
+                serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&data)
+            {
+                if let Some(entry) = entries.get(&params.file_id) {
+                    let offset = entry
+                        .get("bytes_received")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    return Json(serde_json::json!({
+                        "file_id": params.file_id,
+                        "offset": offset,
+                    }))
+                    .into_response();
+                }
+            }
+        }
+    }
+
+    Json(serde_json::json!({
+        "file_id": params.file_id,
+        "offset": 0,
+    }))
+    .into_response()
 }
 
 #[cfg(test)]

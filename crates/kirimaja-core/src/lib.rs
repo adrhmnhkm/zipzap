@@ -10,5 +10,6 @@ pub use localsend_rs;
 pub mod resume;
 
 pub use resume::{
-    KIRIMAJA_RESUME_OFFSET_HEADER, ResumeEntry, ResumeInfoResponse, ResumeJournal,
+    KIRIMAJA_RESUME_OFFSET_HEADER, ResumableFileSink, ResumablePendingFile, ResumeEntry,
+    ResumeInfoResponse, ResumeJournal,
 };

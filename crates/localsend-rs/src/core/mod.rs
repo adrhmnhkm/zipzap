@@ -10,4 +10,7 @@ pub use file::{
     build_file_metadata, build_file_metadata_from_bytes, generate_file_id, get_mime_type,
 };
 pub use session::Session;
-pub use sink::{AtomicFileSink, PendingReceive, ReceiveSink, SinkError};
+pub use sink::{
+    AtomicFileSink, PendingReceive, ReceiveSink, SinkError, reserve_free_name,
+    walk_or_create_directory,
+};

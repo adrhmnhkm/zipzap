@@ -1,7 +1,7 @@
 use crate::error::{LocalSendError, Result};
 use std::path::{Component, Path, PathBuf};
 
-pub(crate) fn safe_join(base: &Path, remote_name: &str) -> Result<PathBuf> {
+pub fn safe_join(base: &Path, remote_name: &str) -> Result<PathBuf> {
     if remote_name.is_empty()
         || remote_name.contains('\0')
         || remote_name.contains('\\')

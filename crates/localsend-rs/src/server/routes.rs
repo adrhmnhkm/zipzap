@@ -1,6 +1,7 @@
 use super::CROSSCOPY_FILE_V3_HANDOFF_HEADER;
 use super::handlers::{
-    handle_cancel, handle_info, handle_prepare_upload, handle_register, handle_upload,
+    handle_cancel, handle_info, handle_prepare_upload, handle_register, handle_resume_info,
+    handle_upload,
 };
 use super::state::ServerState;
 use super::web_share::{WebShareHost, web_share_router};
@@ -35,6 +36,7 @@ pub(crate) fn create_router(
         )
         .route("/api/localsend/v2/upload", post(handle_upload))
         .route("/api/localsend/v2/cancel", post(handle_cancel))
+        .route("/api/kirimaja/v1/resume-info", get(handle_resume_info))
         // The reserved credential is meaningful only on one exact protected
         // prepare route.  Never let another LocalSend handler silently ignore
         // it and fall back into standard behavior.
