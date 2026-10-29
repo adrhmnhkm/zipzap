@@ -177,6 +177,9 @@ impl PendingReceive for ResumablePendingFile {
             .map_err(|err| SinkError::Failed(format!("fsync error: {err}")))?;
         drop(file);
 
+        // On Windows, rename fails if destination already exists. Remove the 0-byte reservation first:
+        let _ = tokio::fs::remove_file(&self.final_path).await;
+
         // Atomically rename .part file to final path
         tokio::fs::rename(&self.part_path, &self.final_path)
             .await
@@ -214,6 +217,9 @@ impl PendingReceive for ResumablePendingFile {
 
         self.preserved = true;
 
+        // Remove the 0-byte reservation so subsequent retry or resume doesn't produce name (1).ext
+        let _ = tokio::fs::remove_file(&self.final_path).await;
+
         if !self.file_id.is_empty() {
             let _ = self.journal.update_progress(&self.file_id, bytes_written).await;
             tracing::info!(
@@ -231,7 +237,12 @@ impl PendingReceive for ResumablePendingFile {
 impl Drop for ResumablePendingFile {
     fn drop(&mut self) {
         if !self.completed && !self.preserved {
-            // Keep partial file and journal intact if unexpectedly dropped
+            // Keep partial file and journal intact if unexpectedly dropped,
+            // but remove the 0-byte reservation file
+            let final_path = self.final_path.clone();
+            tokio::spawn(async move {
+                let _ = tokio::fs::remove_file(&final_path).await;
+            });
             tracing::warn!(
                 file_id = %self.file_id,
                 "Transfer dropped without explicit commit or abort; keeping .part file"

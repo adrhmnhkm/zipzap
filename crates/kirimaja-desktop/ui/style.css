@@ -278,6 +278,35 @@ body {
   background: var(--bg-primary);
   border-radius: 10px;
   border: 1px solid var(--border-color);
+  transition: all 0.2s;
+}
+
+.peer-item:hover {
+  border-color: var(--accent-blue);
+  background: rgba(30, 41, 59, 0.7);
+}
+
+.peer-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.peer-avatar {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.peer-name {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-main);
+}
+
+.peer-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
 }
 
 /* Buttons */

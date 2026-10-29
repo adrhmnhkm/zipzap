@@ -99,9 +99,9 @@ async fn test_resumable_transfer_end_to_end() {
     // Server should reject short body with 500, but preserve partial to .part
     assert_eq!(r1.status(), 500);
 
-    // Final file reservation exists as 0-byte placeholder, not yet published
+    // Final file must not yet exist in the directory while incomplete
     let final_path = save_dir.path().join(file_name);
-    assert_eq!(std::fs::metadata(&final_path).unwrap().len(), 0);
+    assert!(!final_path.exists());
 
     // The partial file must exist with exactly the 400 bytes received so far
     let part_path = save_dir.path().join(format!(".kirimaja-{file_id}.part"));

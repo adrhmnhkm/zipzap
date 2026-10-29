@@ -205,8 +205,11 @@ impl Session {
         let cancellation = {
             let mut lifecycle = self.receive_lifecycle.lock();
             let slot = lifecycle.slots.get_mut(file_id)?;
-            if slot.phase != ReceivePhase::Ready {
+            if slot.phase != ReceivePhase::Ready && slot.phase != ReceivePhase::Cancelled {
                 return None;
+            }
+            if slot.cancellation.is_cancelled() {
+                slot.cancellation = CancellationToken::new();
             }
             slot.phase = ReceivePhase::Receiving;
             slot.cancellation.clone()

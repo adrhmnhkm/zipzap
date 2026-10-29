@@ -76,11 +76,14 @@
     <section class="card devices-section">
       <div class="section-header">
         <h3>Perangkat Terdeteksi di Sekitar</h3>
-        <button id="btn-manual-ip" class="btn btn-sm btn-outline">+ Input IP Manual</button>
+        <div style="display: flex; gap: 8px;">
+          <button id="btn-scan" class="btn btn-sm btn-outline">🔄 Pindai</button>
+          <button id="btn-manual-ip" class="btn btn-sm btn-outline">+ Input IP Manual</button>
+        </div>
       </div>
       <div id="peers-list" class="peers-list">
         <div class="empty-peers">
-          <span>Menunggu perangkat iPhone di jaringan Wi-Fi yang sama...</span>
+          <span>Mencari perangkat di jaringan Wi-Fi...</span>
         </div>
       </div>
     </section>
