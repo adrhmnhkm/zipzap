@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KirimAja</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="brand">
+        <div class="logo-icon">🚀</div>
+        <div>
+          <h1>KirimAja</h1>
+          <p class="tagline">Transfer cepat LAN iPhone ➔ Windows</p>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="btn-settings" class="btn-icon" title="Pengaturan">⚙️</button>
+      </div>
+    </header>
+
+    <!-- Wi-Fi Alert (FR-08) -->
+    <div id="wifi-warning" class="alert alert-warning" style="display: none;">
+      <span class="alert-icon">⚠️</span>
+      <div class="alert-text">
+        <strong>Koneksi Wi-Fi 2.4 GHz terdeteksi.</strong>
+        <span>Untuk kecepatan transfer maksimal (> 20 MB/s), sambungkan laptop dan iPhone ke Wi-Fi 5 GHz.</span>
+      </div>
+    </div>
+
+    <!-- Receiver Status Card -->
+    <section class="card status-card">
+      <div class="radar-container">
+        <div class="radar-ping"></div>
+        <div class="radar-core">📡</div>
+      </div>
+      <div class="status-info">
+        <span class="status-badge" id="server-status">Siap Menerima</span>
+        <h2 id="device-alias">Menyiapkan...</h2>
+        <p class="device-network" id="device-network">IP: Mendeteksi... | Port: 53317</p>
+      </div>
+    </section>
+
+    <!-- Active Transfer Section -->
+    <section id="transfer-card" class="card transfer-card" style="display: none;">
+      <div class="transfer-header">
+        <div>
+          <span class="badge" id="transfer-badge">Menerima File</span>
+          <h3 id="transfer-filename">video_liburan.mp4</h3>
+          <span class="resume-badge" id="resume-badge" style="display: none;">⚡ Melanjutkan (Resume)</span>
+        </div>
+        <div class="transfer-stats">
+          <span class="transfer-speed" id="transfer-speed">0 MB/s</span>
+          <span class="transfer-eta" id="transfer-eta">ETA: --</span>
+        </div>
+      </div>
+
+      <div class="progress-bar-container">
+        <div class="progress-bar-fill" id="progress-fill" style="width: 0%;"></div>
+      </div>
+
+      <div class="transfer-footer">
+        <span id="transfer-bytes">0 MB / 0 MB</span>
+        <span id="transfer-percentage">0%</span>
+      </div>
+
+      <div class="transfer-actions">
+        <button id="btn-cancel" class="btn btn-secondary">Batalkan</button>
+      </div>
+    </section>
+
+    <!-- Discovery / Peer List -->
+    <section class="card devices-section">
+      <div class="section-header">
+        <h3>Perangkat Terdeteksi di Sekitar</h3>
+        <button id="btn-manual-ip" class="btn btn-sm btn-outline">+ Input IP Manual</button>
+      </div>
+      <div id="peers-list" class="peers-list">
+        <div class="empty-peers">
+          <span>Menunggu perangkat iPhone di jaringan Wi-Fi yang sama...</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer Controls -->
+    <footer class="footer">
+      <div class="save-dir-info">
+        <span class="label">Folder Penyimpanan:</span>
+        <span id="current-save-dir" class="path">Downloads/KirimAja</span>
+      </div>
+      <div class="footer-buttons">
+        <button id="btn-change-dir" class="btn btn-sm btn-outline">Ubah Folder</button>
+        <button id="btn-open-dir" class="btn btn-sm btn-primary">Buka Folder</button>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Manual IP Modal (FR-02) -->
+  <div id="modal-manual-ip" class="modal" style="display: none;">
+    <div class="modal-content">
+      <h3>Kirim / Hubungkan Manual via IP</h3>
+      <p class="modal-sub">Gunakan ini jika router memblokir pencarian otomatis (multicast).</p>
+      <div class="form-group">
+        <label for="input-manual-ip">Alamat IP Perangkat (contoh: 192.168.1.15):</label>
+        <input type="text" id="input-manual-ip" placeholder="192.168.x.x" />
+      </div>
+      <div class="modal-actions">
+        <button id="btn-modal-close" class="btn btn-secondary">Batal</button>
+        <button id="btn-modal-connect" class="btn btn-primary">Hubungkan</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

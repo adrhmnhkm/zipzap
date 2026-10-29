@@ -1,0 +1,22 @@
+[package]
+name = "kirimaja-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "KirimAja Desktop App for Windows - Ultra-lightweight LAN file transfer"
+authors = ["KirimAja Team"]
+
+[dependencies]
+kirimaja-core = { path = "../kirimaja-core" }
+tokio = { version = "1.49", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1.0"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }

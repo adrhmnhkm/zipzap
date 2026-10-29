@@ -3,4 +3,5 @@ resolver = "2"
 members = [
     "crates/localsend-rs",
     "crates/kirimaja-core",
+    "crates/kirimaja-desktop",
 ]
