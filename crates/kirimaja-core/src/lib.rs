@@ -7,8 +7,10 @@
 
 pub use localsend_rs;
 
+pub mod ffi;
 pub mod resume;
 
+pub use ffi::{DiscoveredDevice, KirimAjaClientEngine, TransferObserver, TransferProgressEvent};
 pub use resume::{
     KIRIMAJA_RESUME_OFFSET_HEADER, ResumableFileSink, ResumablePendingFile, ResumeEntry,
     ResumeInfoResponse, ResumeJournal,
