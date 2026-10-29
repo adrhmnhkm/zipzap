@@ -4,10 +4,11 @@ mod commands;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use commands::{AppState, connect_manual_ip, get_server_status, open_save_dir};
+use commands::{AppState, change_save_dir, connect_manual_ip, get_server_status, open_save_dir};
 use kirimaja_core::{ResumableFileSink, ResumeJournal};
 use localsend_rs::Protocol;
-use localsend_rs::server::LocalSendServer;
+use localsend_rs::server::{LocalSendServer, ServerEvent};
+use tauri::Emitter;
 use tokio::sync::RwLock;
 
 #[tokio::main]
@@ -27,7 +28,7 @@ async fn main() {
     let server_alias = format!("KirimAja Laptop ({})", whoami());
 
     // Spawn KirimAja receiver server in background
-    let (server, _events) = LocalSendServer::builder()
+    let (server, mut events) = LocalSendServer::builder()
         .alias(server_alias.clone())
         .port(53317)
         .save_dir(&default_dir)
@@ -43,6 +44,40 @@ async fn main() {
 
     // Launch Tauri desktop GUI
     tauri::Builder::default()
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            tokio::spawn(async move {
+                while let Some(event) = events.recv().await {
+                    match event {
+                        ServerEvent::FileReceiveProgress {
+                            file_name,
+                            bytes_received,
+                            total_bytes,
+                            ..
+                        } => {
+                            let _ = handle.emit(
+                                "transfer-progress",
+                                serde_json::json!({
+                                    "filename": file_name,
+                                    "bytesReceived": bytes_received,
+                                    "totalBytes": total_bytes,
+                                    "speedMBs": 0.0,
+                                    "isResume": false
+                                }),
+                            );
+                        }
+                        ServerEvent::FileReceived { file_name, .. } => {
+                            let _ = handle.emit(
+                                "transfer-complete",
+                                serde_json::json!({ "filename": file_name }),
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            });
+            Ok(())
+        })
         .manage(AppState {
             alias: server_alias,
             port,
@@ -51,6 +86,7 @@ async fn main() {
         .invoke_handler(tauri::generate_handler![
             get_server_status,
             open_save_dir,
+            change_save_dir,
             connect_manual_ip
         ])
         .run(tauri::generate_context!())

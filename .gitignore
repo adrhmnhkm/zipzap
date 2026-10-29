@@ -13,6 +13,7 @@
 # Tauri / Frontend
 node_modules/
 dist/
+**/gen/
 
 # Logs & temp
 *.log

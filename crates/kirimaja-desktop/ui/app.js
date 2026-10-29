@@ -110,6 +110,16 @@ function setupEventListeners() {
   document.getElementById("btn-cancel").addEventListener("click", () => {
     invoke("cancel_active_transfer");
   });
+
+  document.getElementById("btn-consent-accept").addEventListener("click", () => {
+    document.getElementById("modal-consent").style.display = "none";
+    invoke("respond_consent", { accept: true });
+  });
+
+  document.getElementById("btn-consent-reject").addEventListener("click", () => {
+    document.getElementById("modal-consent").style.display = "none";
+    invoke("respond_consent", { accept: false });
+  });
 }
 
 function setupTauriEvents() {
@@ -122,6 +132,14 @@ function setupTauriEvents() {
     window.__TAURI__.event.listen("transfer-complete", () => {
       appState.transfer = null;
       updateUI();
+    });
+
+    window.__TAURI__.event.listen("consent-requested", (event) => {
+      const data = event.payload;
+      document.getElementById("consent-sender-text").textContent = `${data.senderAlias || "Perangkat"} ingin mengirim file:`;
+      document.getElementById("consent-filename").textContent = data.fileName || "File";
+      document.getElementById("consent-filesize").textContent = `Ukuran: ${formatBytes(data.fileSize || 0)}`;
+      document.getElementById("modal-consent").style.display = "flex";
     });
   }
 }
