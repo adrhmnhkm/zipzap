@@ -19,6 +19,7 @@ let package = Package(
             path: ".",
             sources: [
                 "App",
+                "Models",
                 "Services",
                 "Views",
             ]

@@ -1,35 +1,65 @@
 import SwiftUI
 import PhotosUI
+import UniformTypeIdentifiers
 
-/// Picker screen allowing users to select media from gallery or document storage.
 public struct SendView: View {
-    public let targetDevice: DiscoveredPeer
-    public var onStartTransfer: (String, Int64) -> Void
+    public let targetDevice: DeviceInfo
+    public var onSendFile: (URL, String, Int64, String) -> Void
 
     @Environment(\.presentationMode) var presentationMode
-    @State private var selectedItem: PhotosPickerItem?
+    @State private var selectedPhotoItem: PhotosPickerItem?
+    @State private var showFileImporter: Bool = false
+    @State private var isProcessingFile: Bool = false
+    @State private var statusMessage: String = ""
+
+    public init(targetDevice: DeviceInfo, onSendFile: @escaping (URL, String, Int64, String) -> Void) {
+        self.targetDevice = targetDevice
+        self.onSendFile = onSendFile
+    }
 
     public var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 24) {
                 // Target banner
-                HStack {
-                    Image(systemName: "paperplane.fill")
-                        .foregroundColor(.accentColor)
-                    Text("Tujuan: **\(targetDevice.alias)**")
-                        .font(.subheadline)
-                    Spacer()
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "laptopcomputer")
+                            .font(.title2)
+                            .foregroundColor(.accentColor)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(targetDevice.alias)
+                                .font(.headline)
+                                .fontWeight(.bold)
+                            Text("\(targetDevice.ip ?? "LAN"):\(targetDevice.port) • \(targetDevice.deviceModel ?? "Windows PC")")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                    }
                 }
                 .padding()
                 .background(Color(UIColor.secondarySystemBackground))
                 .cornerRadius(12)
+                .padding(.horizontal)
+
+                if isProcessingFile {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .scaleEffect(1.2)
+                        Text(statusMessage.isEmpty ? "Menyiapkan berkas..." : statusMessage)
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 24)
+                }
 
                 // Pickers
                 VStack(spacing: 16) {
-                    PhotosPicker(selection: $selectedItem, matching: .any(of: [.images, .videos])) {
-                        HStack {
+                    // 1. Photos & Videos Picker
+                    PhotosPicker(selection: $selectedPhotoItem, matching: .any(of: [.images, .videos])) {
+                        HStack(spacing: 12) {
                             Image(systemName: "photo.on.rectangle.angled")
-                                .font(.title2)
+                                .font(.title3)
                             Text("Pilih Foto atau Video dari Galeri")
                                 .fontWeight(.semibold)
                         }
@@ -39,20 +69,21 @@ public struct SendView: View {
                         .foregroundColor(.white)
                         .cornerRadius(12)
                     }
-                    .onChange(of: selectedItem) { newItem in
-                        if newItem != nil {
-                            // Mock photo selection metadata
-                            onStartTransfer("IMG_Liburan_4K.MOV", 1_850_000_000)
+                    .disabled(isProcessingFile)
+                    .onChange(of: selectedPhotoItem) { _, newItem in
+                        if let item = newItem {
+                            processPhotoItem(item)
                         }
                     }
 
+                    // 2. Files App Picker
                     Button(action: {
-                        onStartTransfer("Dokumen_Penting.pdf", 45_000_000)
+                        showFileImporter = true
                     }) {
-                        HStack {
+                        HStack(spacing: 12) {
                             Image(systemName: "folder")
-                                .font(.title2)
-                            Text("Pilih Berkas File (Files App)")
+                                .font(.title3)
+                            Text("Pilih Berkas Dokumen (Files App)")
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
@@ -61,13 +92,14 @@ public struct SendView: View {
                         .foregroundColor(.primary)
                         .cornerRadius(12)
                     }
+                    .disabled(isProcessingFile)
                 }
                 .padding(.horizontal)
 
                 Spacer()
             }
             .padding(.top)
-            .navigationTitle("Kirim File")
+            .navigationTitle("Kirim ke PC")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -76,6 +108,98 @@ public struct SendView: View {
                     }
                 }
             }
+            .fileImporter(
+                isPresented: $showFileImporter,
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let selectedURL = urls.first else { return }
+                    processDocURL(selectedURL)
+                case .failure(let error):
+                    print("[SendView] File picker error: \(error)")
+                }
+            }
+        }
+    }
+
+    private func processPhotoItem(_ item: PhotosPickerItem) {
+        self.isProcessingFile = true
+        self.statusMessage = "Membaca media dari galeri..."
+
+        Task {
+            do {
+                // Try to load as data
+                if let data = try await item.loadTransferable(type: Data.self) {
+                    // Guess extension
+                    let ext: String
+                    let mime: String
+                    if let contentType = item.supportedContentTypes.first {
+                        ext = contentType.preferredFilenameExtension ?? "jpg"
+                        mime = contentType.preferredMIMEType ?? "image/jpeg"
+                    } else {
+                        ext = "jpg"
+                        mime = "image/jpeg"
+                    }
+
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = "yyyyMMdd_HHmmss"
+                    let fileName = "IMG_\(formatter.string(from: Date())).\(ext)"
+
+                    let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
+                    try data.write(to: tempURL)
+
+                    await MainActor.run {
+                        self.isProcessingFile = false
+                        self.presentationMode.wrappedValue.dismiss()
+                        self.onSendFile(tempURL, fileName, Int64(data.count), mime)
+                    }
+                } else {
+                    await MainActor.run {
+                        self.isProcessingFile = false
+                        self.statusMessage = "Gagal membaca berkas media"
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.isProcessingFile = false
+                    self.statusMessage = "Error: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func processDocURL(_ url: URL) {
+        self.isProcessingFile = true
+        self.statusMessage = "Menyalin berkas dokumen..."
+
+        guard url.startAccessingSecurityScopedResource() else {
+            self.isProcessingFile = false
+            return
+        }
+        defer { url.stopAccessingSecurityScopedResource() }
+
+        let fileName = url.lastPathComponent
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "_" + fileName)
+
+        do {
+            if FileManager.default.fileExists(atPath: tempURL.path) {
+                try FileManager.default.removeItem(at: tempURL)
+            }
+            try FileManager.default.copyItem(at: url, to: tempURL)
+
+            let attr = try FileManager.default.attributesOfItem(atPath: tempURL.path)
+            let fileSize = attr[.size] as? Int64 ?? 0
+            let ext = url.pathExtension.lowercased()
+            let mimeType = UTType(filenameExtension: ext)?.preferredMIMEType ?? "application/octet-stream"
+
+            self.isProcessingFile = false
+            self.presentationMode.wrappedValue.dismiss()
+            self.onSendFile(tempURL, fileName, fileSize, mimeType)
+        } catch {
+            self.isProcessingFile = false
+            self.statusMessage = "Gagal memproses dokumen: \(error.localizedDescription)"
         }
     }
 }
