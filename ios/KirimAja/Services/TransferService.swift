@@ -7,6 +7,8 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
     @Published public var activeTransfer: ActiveTransferState?
 
     private var sendTask: Task<Void, Error>?
+    private var currentSessionId: String?
+    private var currentTarget: DeviceInfo?
     private var lastUpdateTime = Date()
     private var lastBytesTransferred: Int64 = 0
     private var currentResumeOffset: Int64 = 0
@@ -140,6 +142,8 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             guard let token = prepResponse.files[fileId] else {
                 throw NSError(domain: "TransferError", code: 500, userInfo: [NSLocalizedDescriptionKey: "Token file tidak ditemukan dari penerima"])
             }
+            self.currentSessionId = prepResponse.sessionId
+            self.currentTarget = target
 
             // 4. Create slice in background if resuming from an offset
             let uploadSourceURL: URL
@@ -214,6 +218,31 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
         }
     }
 
+    public func startSending(
+        fileURL: URL,
+        fileName: String,
+        fileSize: Int64,
+        fileType: String,
+        target: DeviceInfo
+    ) {
+        self.sendTask?.cancel()
+        self.sendTask = Task {
+            do {
+                try await self.sendFile(
+                    fileURL: fileURL,
+                    fileName: fileName,
+                    fileSize: fileSize,
+                    fileType: fileType,
+                    target: target
+                )
+            } catch {
+                if !Task.isCancelled && (error as NSError).code != NSURLErrorCancelled {
+                    print("[TransferService] Transfer failed: \(error)")
+                }
+            }
+        }
+    }
+
     public func resumeActiveTransfer() {
         guard let active = self.activeTransfer,
               let fileURL = active.fileURL,
@@ -225,19 +254,13 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
         self.activeTransfer?.errorMessage = nil
         self.activeTransfer?.eta = "Menghubungkan kembali..."
 
-        self.sendTask = Task {
-            do {
-                try await self.sendFile(
-                    fileURL: fileURL,
-                    fileName: active.fileName,
-                    fileSize: active.totalBytes,
-                    fileType: fileType,
-                    target: target
-                )
-            } catch {
-                print("[TransferService] Resume attempt failed: \(error)")
-            }
-        }
+        self.startSending(
+            fileURL: fileURL,
+            fileName: active.fileName,
+            fileSize: active.totalBytes,
+            fileType: fileType,
+            target: target
+        )
     }
 
     nonisolated private static func createUploadSliceSync(from sourceURL: URL, startingAt offset: Int64, fileName: String) throws -> URL {
@@ -267,9 +290,38 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
     }
 
     public func cancelTransfer() {
+        let sid = self.currentSessionId
+        let target = self.currentTarget ?? self.activeTransfer?.target
+
+        // 1. Cancel the managed Swift Task
         sendTask?.cancel()
         sendTask = nil
-        activeTransfer = nil
+
+        // 2. Abort all active URLSession upload tasks immediately
+        urlSession.getAllTasks { tasks in
+            tasks.forEach { $0.cancel() }
+        }
+
+        // 3. Notify desktop receiver to cancel and release server session
+        if let target = target, let ip = target.ip {
+            Task {
+                var urlComponents = URLComponents(string: "\(target.effectiveProtocol)://\(ip):\(target.port)/api/localsend/v2/cancel")
+                if let sid = sid {
+                    urlComponents?.queryItems = [URLQueryItem(name: "sessionId", value: sid)]
+                }
+                if let cancelURL = urlComponents?.url {
+                    var cancelReq = URLRequest(url: cancelURL)
+                    cancelReq.httpMethod = "POST"
+                    cancelReq.timeoutInterval = 2.0
+                    _ = try? await URLSession.shared.data(for: cancelReq)
+                    print("[TransferService] Sent cancel request to desktop receiver: \(ip)")
+                }
+            }
+        }
+
+        self.currentSessionId = nil
+        self.currentTarget = nil
+        self.activeTransfer = nil
         BackgroundManager.shared.endTransferBackgroundTask()
         BackgroundManager.shared.updateIdleTimer(isTransferring: false)
     }

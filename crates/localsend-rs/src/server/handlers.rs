@@ -738,6 +738,11 @@ pub(crate) async fn handle_upload(
                 tracing::error!(%cleanup_error, "Failed to preserve partial upload");
             }
             let mut state = state_ref.write().await;
+            let _ = state
+                .events_tx
+                .try_send(crate::server::events::ServerEvent::SessionDone {
+                    session_id: session_id.clone(),
+                });
             if state.current_session.as_ref().map(|s| &s.id) == Some(&session_id) {
                 state.current_session = None;
                 state.current_session_from = None;
@@ -753,6 +758,11 @@ pub(crate) async fn handle_upload(
                 tracing::error!(%cleanup_error, "Failed to preserve partial upload on error");
             }
             let mut state = state_ref.write().await;
+            let _ = state
+                .events_tx
+                .try_send(crate::server::events::ServerEvent::SessionDone {
+                    session_id: session_id.clone(),
+                });
             if state.current_session.as_ref().map(|s| &s.id) == Some(&session_id) {
                 state.current_session = None;
                 state.current_session_from = None;
@@ -948,6 +958,11 @@ pub(crate) async fn handle_cancel(
         } else if claimed_by_sender || auto_accept {
             if let Some(session) = &state.current_session {
                 let _ = session.try_cancel_receives();
+                let _ = state
+                    .events_tx
+                    .try_send(crate::server::events::ServerEvent::SessionDone {
+                        session_id: session.id.clone(),
+                    });
                 state.current_session = None;
                 state.current_session_from = None;
                 tracing::info!("Sender cancelled active session from {}", peer.ip());

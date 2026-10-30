@@ -158,19 +158,13 @@ public struct ContentView: View {
             .navigationBarHidden(true)
             .sheet(item: $selectedDevice) { target in
                 SendView(targetDevice: target) { fileURL, fileName, fileSize, mimeType in
-                    Task {
-                        do {
-                            try await transfer.sendFile(
-                                fileURL: fileURL,
-                                fileName: fileName,
-                                fileSize: fileSize,
-                                fileType: mimeType,
-                                target: target
-                            )
-                        } catch {
-                            print("[ContentView] Transfer failed: \(error)")
-                        }
-                    }
+                    transfer.startSending(
+                        fileURL: fileURL,
+                        fileName: fileName,
+                        fileSize: fileSize,
+                        fileType: mimeType,
+                        target: target
+                    )
                 }
             }
             .sheet(isPresented: $showManualIPDialog) {

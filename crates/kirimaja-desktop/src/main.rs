@@ -6,8 +6,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use commands::{
-    AppState, change_save_dir, connect_manual_ip, get_best_local_ip, get_peers,
-    get_server_status, open_save_dir, scan_network,
+    AppState, cancel_active_transfer, change_save_dir, connect_manual_ip, get_best_local_ip,
+    get_peers, get_server_status, open_save_dir, scan_network,
 };
 use kirimaja_core::{ResumableFileSink, ResumeJournal};
 use localsend_rs::{
@@ -156,6 +156,12 @@ fn main() {
                                 serde_json::json!({ "filename": file_name }),
                             );
                         }
+                        ServerEvent::SessionDone { .. } => {
+                            last_bytes = 0;
+                            current_speed_mbs = 0.0;
+                            last_progress_time = std::time::Instant::now();
+                            let _ = srv_handle.emit("transfer-cancelled", serde_json::json!({}));
+                        }
                         _ => {}
                     }
                 }
@@ -271,7 +277,8 @@ fn main() {
             change_save_dir,
             connect_manual_ip,
             get_peers,
-            scan_network
+            scan_network,
+            cancel_active_transfer
         ])
         .run(tauri::generate_context!())
         .expect("error while running KirimAja application");

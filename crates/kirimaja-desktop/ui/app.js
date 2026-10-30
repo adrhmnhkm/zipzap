@@ -295,6 +295,11 @@ function setupTauriEvents() {
       updateUI();
     });
 
+    window.__TAURI__.event.listen("transfer-cancelled", () => {
+      appState.transfer = null;
+      updateUI();
+    });
+
     window.__TAURI__.event.listen("consent-requested", (event) => {
       const data = event.payload;
       document.getElementById("consent-sender-text").textContent = `${data.senderAlias || "Perangkat"} ingin mengirim file:`;

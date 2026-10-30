@@ -282,6 +282,16 @@ pub async fn scan_network(
     Ok(peers.values().cloned().collect())
 }
 
+#[tauri::command]
+pub async fn cancel_active_transfer() -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let _ = client
+        .post("http://127.0.0.1:53317/api/localsend/v2/cancel")
+        .send()
+        .await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
