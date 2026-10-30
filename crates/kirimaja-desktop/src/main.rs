@@ -107,6 +107,7 @@ fn main() {
                             file_name,
                             bytes_received,
                             total_bytes,
+                            file_count,
                             ..
                         } => {
                             let now = std::time::Instant::now();
