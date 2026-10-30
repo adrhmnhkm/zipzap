@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import UniformTypeIdentifiers
+import CryptoKit
 
 public struct SendView: View {
     public let targetDevice: DeviceInfo
@@ -143,12 +144,15 @@ public struct SendView: View {
                         mime = "image/jpeg"
                     }
 
-                    let formatter = DateFormatter()
-                    formatter.dateFormat = "yyyyMMdd_HHmmss"
-                    let fileName = "IMG_\(formatter.string(from: Date())).\(ext)"
+                    let sample = data.prefix(8192)
+                    let hash = SHA256.hash(data: sample)
+                    let hashHex = hash.compactMap { String(format: "%02x", $0) }.joined().prefix(8)
+                    let fileName = "IMG_\(hashHex)_\(data.count).\(ext)"
 
                     let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
-                    try data.write(to: tempURL)
+                    if !FileManager.default.fileExists(atPath: tempURL.path) {
+                        try data.write(to: tempURL)
+                    }
 
                     await MainActor.run {
                         self.isProcessingFile = false
@@ -181,13 +185,23 @@ public struct SendView: View {
         defer { url.stopAccessingSecurityScopedResource() }
 
         let fileName = url.lastPathComponent
-        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + "_" + fileName)
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(fileName)
 
         do {
             if FileManager.default.fileExists(atPath: tempURL.path) {
-                try FileManager.default.removeItem(at: tempURL)
+                if let attr = try? FileManager.default.attributesOfItem(atPath: tempURL.path),
+                   let existingSize = attr[.size] as? Int64,
+                   let originalAttr = try? FileManager.default.attributesOfItem(atPath: url.path),
+                   let originalSize = originalAttr[.size] as? Int64,
+                   existingSize == originalSize && originalSize > 0 {
+                    // Reuse cached file
+                } else {
+                    try? FileManager.default.removeItem(at: tempURL)
+                    try FileManager.default.copyItem(at: url, to: tempURL)
+                }
+            } else {
+                try FileManager.default.copyItem(at: url, to: tempURL)
             }
-            try FileManager.default.copyItem(at: url, to: tempURL)
 
             let attr = try FileManager.default.attributesOfItem(atPath: tempURL.path)
             let fileSize = attr[.size] as? Int64 ?? 0

@@ -2,13 +2,17 @@ import SwiftUI
 
 public struct TransferProgressView: View {
     @ObservedObject var bgManager = BackgroundManager.shared
-    
+
     public var fileName: String
     public var bytesTransferred: Int64
     public var totalBytes: Int64
     public var speedMBs: Double
     public var etaText: String
     public var isResume: Bool
+    public var isPaused: Bool
+    public var errorMessage: String?
+    public var canRetry: Bool
+    public var onRetry: () -> Void
     public var onCancel: () -> Void
 
     public var progressFraction: Double {
@@ -23,14 +27,14 @@ public struct TransferProgressView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 16) {
             // Header
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(fileName)
                         .font(.headline)
                         .lineLimit(1)
-                    
+
                     if isResume {
                         HStack(spacing: 4) {
                             Image(systemName: "bolt.fill")
@@ -46,12 +50,12 @@ public struct TransferProgressView: View {
                 Text(String(format: "%.1f MB/s", speedMBs))
                     .font(.system(.title3, design: .monospaced))
                     .fontWeight(.bold)
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(isPaused ? .secondary : .accentColor)
             }
 
             // Progress Bar
             ProgressView(value: progressFraction)
-                .progressViewStyle(LinearProgressViewStyle())
+                .progressViewStyle(LinearProgressViewStyle(tint: isPaused ? .orange : .accentColor))
                 .scaleEffect(x: 1, y: 2.5, anchor: .center)
                 .clipShape(RoundedRectangle(cornerRadius: 4))
 
@@ -63,7 +67,28 @@ public struct TransferProgressView: View {
                 Spacer()
                 Text(etaText.isEmpty ? "Menghitung sisa waktu..." : "ETA: \(etaText)")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(isPaused ? .orange : .secondary)
+            }
+
+            // Error or Interrupted Notice Banner
+            if isPaused || errorMessage != nil {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundColor(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Transfer Terhenti")
+                            .font(.caption)
+                            .fontWeight(.bold)
+                            .foregroundColor(.orange)
+                        Text(errorMessage ?? "Koneksi terputus. Pastikan layar menyala dan Wi-Fi laptop terhubung.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.orange.opacity(0.12))
+                .cornerRadius(8)
             }
 
             Divider()
@@ -79,19 +104,30 @@ public struct TransferProgressView: View {
                         .foregroundColor(.secondary)
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, 2)
 
-            // Cancel Button
-            Button(role: .destructive, action: onCancel) {
-                Text("Batalkan Pengiriman")
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+            // Action Buttons
+            HStack(spacing: 12) {
+                if canRetry {
+                    Button(action: onRetry) {
+                        Label("Lanjutkan Transfer", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                Button(role: .destructive, action: onCancel) {
+                    Text("Batalkan")
+                        .padding(.vertical, 8)
+                        .padding(.horizontal, 16)
+                }
+                .buttonStyle(.bordered)
             }
-            .buttonStyle(.bordered)
         }
-        .padding(20)
+        .padding(18)
         .background(Color(UIColor.secondarySystemBackground))
         .cornerRadius(16)
-        .padding()
+        .padding(.horizontal)
     }
 }

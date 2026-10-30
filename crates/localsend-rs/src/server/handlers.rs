@@ -264,6 +264,15 @@ async fn handle_standard_prepare_upload(
                     tracing::warn!("Timed-out session is publishing a file; rejecting replacement");
                     return StatusCode::CONFLICT.into_response();
                 }
+            } else if state.current_session_from == Some(peer.ip()) {
+                // If the same peer reconnects after a disconnect or screen lock, release the stale session
+                if session.try_cancel_receives() {
+                    tracing::info!(%peer, "Same peer reconnected; releasing stale session for resume/retry");
+                    state.current_session = None;
+                    state.current_session_from = None;
+                } else {
+                    return StatusCode::CONFLICT.into_response();
+                }
             } else {
                 tracing::warn!("Session already exists, rejecting new session");
                 return StatusCode::CONFLICT.into_response();
@@ -720,6 +729,11 @@ pub(crate) async fn handle_upload(
             if let Err(cleanup_error) = pending.preserve_partial(resume_offset + written).await {
                 tracing::error!(%cleanup_error, "Failed to preserve partial upload");
             }
+            let mut state = state_ref.write().await;
+            if state.current_session.as_ref().map(|s| &s.id) == Some(&session_id) {
+                state.current_session = None;
+                state.current_session_from = None;
+            }
             return StatusCode::CONFLICT.into_response();
         }
         Some(Ok(outcome)) => outcome,
@@ -729,6 +743,11 @@ pub(crate) async fn handle_upload(
             tracing::error!("Failed to save file to {:?}: {}", save_path, e);
             if let Err(cleanup_error) = pending.preserve_partial(resume_offset + written).await {
                 tracing::error!(%cleanup_error, "Failed to preserve partial upload on error");
+            }
+            let mut state = state_ref.write().await;
+            if state.current_session.as_ref().map(|s| &s.id) == Some(&session_id) {
+                state.current_session = None;
+                state.current_session_from = None;
             }
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
@@ -755,6 +774,11 @@ pub(crate) async fn handle_upload(
         );
         if let Err(cleanup_error) = pending.preserve_partial(total_written).await {
             tracing::error!(%cleanup_error, "Failed to preserve size-mismatched upload");
+        }
+        let mut state = state_ref.write().await;
+        if state.current_session.as_ref().map(|s| &s.id) == Some(&session_id) {
+            state.current_session = None;
+            state.current_session_from = None;
         }
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -893,26 +917,35 @@ pub(crate) async fn handle_cancel(
     // The sender gave up while somebody was still deciding. It has no session
     // id to name, so not naming one is the request rather than a malformed one.
     if params.session_id.is_none() {
-        let Some(reservation) = state.awaiting_consent.take() else {
+        if let Some(reservation) = state.awaiting_consent.take() {
+            if reservation.from != peer.ip() {
+                state.awaiting_consent = Some(reservation);
+                tracing::warn!("Cancel from {} is not the peer that reserved", peer.ip());
+                return StatusCode::FORBIDDEN.into_response();
+            }
+            if let Some(session) = &state.current_session
+                && session.id == reservation.session_id
+            {
+                let _ = session.try_cancel_receives();
+                state.current_session = None;
+                state.current_session_from = None;
+            }
+            // Wakes the parked handler, which unwinds through its own decline path.
+            reservation.withdraw.cancel();
+            tracing::info!("Sender withdrew its offer before it was answered");
+            return StatusCode::OK.into_response();
+        } else if claimed_by_sender {
+            if let Some(session) = &state.current_session {
+                let _ = session.try_cancel_receives();
+                state.current_session = None;
+                state.current_session_from = None;
+                tracing::info!("Sender cancelled active session from {}", peer.ip());
+            }
+            return StatusCode::OK.into_response();
+        } else {
             tracing::warn!("Cancel with no session id, and nothing is awaiting consent");
             return StatusCode::BAD_REQUEST.into_response();
-        };
-        if reservation.from != peer.ip() {
-            state.awaiting_consent = Some(reservation);
-            tracing::warn!("Cancel from {} is not the peer that reserved", peer.ip());
-            return StatusCode::FORBIDDEN.into_response();
         }
-        if let Some(session) = &state.current_session
-            && session.id == reservation.session_id
-        {
-            let _ = session.try_cancel_receives();
-            state.current_session = None;
-            state.current_session_from = None;
-        }
-        // Wakes the parked handler, which unwinds through its own decline path.
-        reservation.withdraw.cancel();
-        tracing::info!("Sender withdrew its offer before it was answered");
-        return StatusCode::OK.into_response();
     }
     let session_id = params
         .session_id
@@ -953,7 +986,7 @@ pub(crate) async fn handle_cancel(
     }
 
     if let Some(session) = &state.current_session
-        && session.id == session_id
+        && (session.id == session_id || claimed_by_sender)
     {
         if !session.try_cancel_receives() {
             tracing::info!(

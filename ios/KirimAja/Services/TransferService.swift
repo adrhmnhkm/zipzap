@@ -6,7 +6,7 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
 
     @Published public var activeTransfer: ActiveTransferState?
 
-    private var currentTask: URLSessionUploadTask?
+    private var sendTask: Task<Void, Error>?
     private var lastUpdateTime = Date()
     private var lastBytesTransferred: Int64 = 0
     private var currentResumeOffset: Int64 = 0
@@ -42,7 +42,7 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             .replacingOccurrences(of: "=", with: "") ?? UUID().uuidString
         let fileId = String(fileIdRaw.prefix(32))
 
-        // 2. Query KirimAja resume endpoint to see if the desktop already has a partial transfer
+        // 2. Query KirimAja resume endpoint to check if desktop already has partial bytes
         var resumeOffset: Int64 = 0
         if let resumeInfoURL = URL(string: "\(target.effectiveProtocol)://\(targetIP):\(target.port)/api/kirimaja/v1/resume-info?file_id=\(fileId)") {
             var checkReq = URLRequest(url: resumeInfoURL)
@@ -63,11 +63,18 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             totalBytes: fileSize,
             speedMBs: 0.0,
             eta: resumeOffset > 0 ? "Melanjutkan..." : "Menghubungkan...",
-            isResume: resumeOffset > 0
+            isResume: resumeOffset > 0,
+            isCompleted: false,
+            isPaused: false,
+            errorMessage: nil,
+            canRetry: false,
+            fileURL: fileURL,
+            fileType: fileType,
+            target: target
         )
 
         do {
-            // 3. Prepare Upload Request
+            // 3. Prepare Upload Request with automatic stale session recovery (HTTP 409)
             let meta = FileMetadata(
                 id: fileId,
                 fileName: fileName,
@@ -87,20 +94,50 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             req.httpBody = try JSONEncoder().encode(prepareReq)
             req.timeoutInterval = 10.0
 
-            let (prepareData, prepareResp) = try await URLSession.shared.data(for: req)
-            guard let httpResp = prepareResp as? HTTPURLResponse, (200...299).contains(httpResp.statusCode) else {
-                throw NSError(domain: "TransferError", code: 500, userInfo: [NSLocalizedDescriptionKey: "Target menolak permintaan pengiriman"])
+            var prepareData: Data?
+            for attempt in 1...2 {
+                let (pData, pResp) = try await URLSession.shared.data(for: req)
+                if let httpResp = pResp as? HTTPURLResponse {
+                    if httpResp.statusCode == 409 && attempt == 1 {
+                        print("[TransferService] Desktop returned 409 Conflict. Clearing stale session on desktop...")
+                        if let cancelURL = URL(string: "\(target.effectiveProtocol)://\(targetIP):\(target.port)/api/localsend/v2/cancel") {
+                            var cancelReq = URLRequest(url: cancelURL)
+                            cancelReq.httpMethod = "POST"
+                            cancelReq.timeoutInterval = 3.0
+                            _ = try? await URLSession.shared.data(for: cancelReq)
+                        }
+                        try await Task.sleep(nanoseconds: 500_000_000)
+                        continue
+                    }
+
+                    if (200...299).contains(httpResp.statusCode) {
+                        prepareData = pData
+                        break
+                    }
+                }
             }
 
-            let prepResponse = try JSONDecoder().decode(PrepareUploadResponse.self, from: prepareData)
+            guard let finalData = prepareData else {
+                throw NSError(domain: "TransferError", code: 500, userInfo: [NSLocalizedDescriptionKey: "Target menolak permintaan pengiriman (sesi sibuk)"])
+            }
+
+            let prepResponse = try JSONDecoder().decode(PrepareUploadResponse.self, from: finalData)
             guard let token = prepResponse.files[fileId] else {
                 throw NSError(domain: "TransferError", code: 500, userInfo: [NSLocalizedDescriptionKey: "Token file tidak ditemukan dari penerima"])
             }
 
-            // 4. Create slice if resuming from offset
-            let uploadSourceURL = try createUploadSlice(from: fileURL, startingAt: resumeOffset, fileName: fileName)
+            // 4. Create slice in background if resuming from an offset
+            let uploadSourceURL: URL
+            if resumeOffset > 0 {
+                self.activeTransfer?.eta = "Menyiapkan resume..."
+                uploadSourceURL = try await Task.detached(priority: .userInitiated) {
+                    try TransferService.createUploadSliceSync(from: fileURL, startingAt: resumeOffset, fileName: fileName)
+                }.value
+            } else {
+                uploadSourceURL = fileURL
+            }
 
-            // 5. Upload file stream
+            // 5. Upload file stream with delegate
             let uploadURL = URL(string: "\(target.effectiveProtocol)://\(targetIP):\(target.port)/api/localsend/v2/upload?sessionId=\(prepResponse.sessionId)&fileId=\(fileId)&token=\(token)")!
             var uploadReq = URLRequest(url: uploadURL)
             uploadReq.httpMethod = "POST"
@@ -110,8 +147,11 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
 
             self.lastUpdateTime = Date()
             self.lastBytesTransferred = 0
+            if resumeOffset > 0 {
+                self.activeTransfer?.eta = "Melanjutkan transfer..."
+            }
 
-            let (uploadData, uploadResp) = try await self.urlSession.upload(for: uploadReq, fromFile: uploadSourceURL)
+            let (uploadData, uploadResp) = try await self.urlSession.upload(for: uploadReq, fromFile: uploadSourceURL, delegate: self)
 
             // Cleanup slice file if created
             if uploadSourceURL != fileURL {
@@ -125,7 +165,12 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
 
             // Completed!
             self.activeTransfer?.bytesTransferred = fileSize
+            self.activeTransfer?.speedMBs = 0.0
+            self.activeTransfer?.eta = "Selesai!"
             self.activeTransfer?.isCompleted = true
+            self.activeTransfer?.isPaused = false
+            self.activeTransfer?.canRetry = false
+            self.activeTransfer?.errorMessage = nil
             bgManager.endTransferBackgroundTask()
             bgManager.updateIdleTimer(isTransferring: false)
 
@@ -136,14 +181,51 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             }
 
         } catch {
-            self.activeTransfer?.errorMessage = error.localizedDescription
+            let isCancelled = Task.isCancelled || (error as NSError).code == NSURLErrorCancelled
+            if !isCancelled {
+                var state = self.activeTransfer
+                state?.isPaused = true
+                state?.canRetry = true
+                state?.speedMBs = 0.0
+                state?.eta = "Terputus"
+                state?.errorMessage = "Koneksi terputus: \(error.localizedDescription)"
+                self.activeTransfer = state
+            } else {
+                self.activeTransfer = nil
+            }
             bgManager.endTransferBackgroundTask()
             bgManager.updateIdleTimer(isTransferring: false)
             throw error
         }
     }
 
-    private func createUploadSlice(from sourceURL: URL, startingAt offset: Int64, fileName: String) throws -> URL {
+    public func resumeActiveTransfer() {
+        guard let active = self.activeTransfer,
+              let fileURL = active.fileURL,
+              let fileType = active.fileType,
+              let target = active.target else { return }
+
+        self.activeTransfer?.isPaused = false
+        self.activeTransfer?.canRetry = false
+        self.activeTransfer?.errorMessage = nil
+        self.activeTransfer?.eta = "Menghubungkan kembali..."
+
+        self.sendTask = Task {
+            do {
+                try await self.sendFile(
+                    fileURL: fileURL,
+                    fileName: active.fileName,
+                    fileSize: active.totalBytes,
+                    fileType: fileType,
+                    target: target
+                )
+            } catch {
+                print("[TransferService] Resume attempt failed: \(error)")
+            }
+        }
+    }
+
+    nonisolated private static func createUploadSliceSync(from sourceURL: URL, startingAt offset: Int64, fileName: String) throws -> URL {
         guard offset > 0 else { return sourceURL }
 
         let sliceURL = FileManager.default.temporaryDirectory.appendingPathComponent("slice_\(offset)_\(fileName)")
@@ -170,8 +252,8 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
     }
 
     public func cancelTransfer() {
-        currentTask?.cancel()
-        currentTask = nil
+        sendTask?.cancel()
+        sendTask = nil
         activeTransfer = nil
         BackgroundManager.shared.endTransferBackgroundTask()
         BackgroundManager.shared.updateIdleTimer(isTransferring: false)
@@ -186,7 +268,7 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
         totalBytesExpectedToSend: Int64
     ) {
         Task { @MainActor in
-            guard var state = self.activeTransfer else { return }
+            guard var state = self.activeTransfer, !state.isPaused else { return }
 
             let effectiveBytesTransferred = self.currentResumeOffset + totalBytesSent
             let now = Date()

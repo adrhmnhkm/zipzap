@@ -1,6 +1,7 @@
 import SwiftUI
 
 public struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var discovery = DiscoveryService.shared
     @StateObject private var transfer = TransferService.shared
 
@@ -70,6 +71,12 @@ public struct ContentView: View {
                         speedMBs: active.speedMBs,
                         etaText: active.isCompleted ? "Selesai!" : active.eta,
                         isResume: active.isResume,
+                        isPaused: active.isPaused,
+                        errorMessage: active.errorMessage,
+                        canRetry: active.canRetry,
+                        onRetry: {
+                            transfer.resumeActiveTransfer()
+                        },
                         onCancel: {
                             transfer.cancelTransfer()
                         }
@@ -235,6 +242,14 @@ public struct ContentView: View {
             }
             .onAppear {
                 discovery.startDiscovery()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    if transfer.activeTransfer?.isPaused == true && transfer.activeTransfer?.canRetry == true {
+                        print("[ContentView] App resumed to foreground, automatically resuming transfer...")
+                        transfer.resumeActiveTransfer()
+                    }
+                }
             }
         }
     }

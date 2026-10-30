@@ -103,5 +103,42 @@ public struct ActiveTransferState: Identifiable, Sendable {
     public var eta: String
     public var isResume: Bool
     public var isCompleted: Bool = false
+    public var isPaused: Bool = false
     public var errorMessage: String? = nil
+    public var canRetry: Bool = false
+
+    // Context for resuming
+    public var fileURL: URL? = nil
+    public var fileType: String? = nil
+    public var target: DeviceInfo? = nil
+
+    public init(
+        fileName: String,
+        bytesTransferred: Int64,
+        totalBytes: Int64,
+        speedMBs: Double,
+        eta: String,
+        isResume: Bool,
+        isCompleted: Bool = false,
+        isPaused: Bool = false,
+        errorMessage: String? = nil,
+        canRetry: Bool = false,
+        fileURL: URL? = nil,
+        fileType: String? = nil,
+        target: DeviceInfo? = nil
+    ) {
+        self.fileName = fileName
+        self.bytesTransferred = bytesTransferred
+        self.totalBytes = totalBytes
+        self.speedMBs = speedMBs
+        self.eta = eta
+        self.isResume = isResume
+        self.isCompleted = isCompleted
+        self.isPaused = isPaused
+        self.errorMessage = errorMessage
+        self.canRetry = canRetry
+        self.fileURL = fileURL
+        self.fileType = fileType
+        self.target = target
+    }
 }
