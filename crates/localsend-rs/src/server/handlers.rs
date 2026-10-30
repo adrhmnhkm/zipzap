@@ -729,13 +729,14 @@ pub(crate) async fn handle_upload(
             },
         ) => Some(result),
     };
+    let was_cancelled = cancellation.is_cancelled();
     let body = match body_result {
         None => {
             let written = file_reported.load(Ordering::Relaxed);
             progress.rollback(resume_offset + written);
-            tracing::info!(%session_id, "Upload cancelled or interrupted before publication");
-            if let Err(cleanup_error) = pending.preserve_partial(resume_offset + written).await {
-                tracing::error!(%cleanup_error, "Failed to preserve partial upload");
+            tracing::info!(%session_id, "Upload cancelled by explicit request before publication");
+            if let Err(cleanup_error) = pending.abort().await {
+                tracing::error!(%cleanup_error, "Failed to abort partial upload on cancel");
             }
             let mut state = state_ref.write().await;
             let _ = state
@@ -753,21 +754,34 @@ pub(crate) async fn handle_upload(
         Some(Err(e)) => {
             let written = file_reported.load(Ordering::Relaxed);
             progress.rollback(resume_offset + written);
-            tracing::error!("Failed to save file to {:?}: {}", save_path, e);
-            if let Err(cleanup_error) = pending.preserve_partial(resume_offset + written).await {
-                tracing::error!(%cleanup_error, "Failed to preserve partial upload on error");
+            if was_cancelled {
+                tracing::info!(%session_id, "Upload stream aborted due to cancellation");
+                if let Err(cleanup_error) = pending.abort().await {
+                    tracing::error!(%cleanup_error, "Failed to abort partial upload on cancel");
+                }
+                let mut state = state_ref.write().await;
+                let _ = state
+                    .events_tx
+                    .try_send(crate::server::events::ServerEvent::SessionDone {
+                        session_id: session_id.clone(),
+                    });
+                if state.current_session.as_ref().map(|s| &s.id) == Some(&session_id) {
+                    state.current_session = None;
+                    state.current_session_from = None;
+                }
+                return StatusCode::CONFLICT.into_response();
+            } else {
+                tracing::error!("Failed to save file to {:?}: {}", save_path, e);
+                if let Err(cleanup_error) = pending.preserve_partial(resume_offset + written).await {
+                    tracing::error!(%cleanup_error, "Failed to preserve partial upload on error");
+                }
+                let mut state = state_ref.write().await;
+                if state.current_session.as_ref().map(|s| &s.id) == Some(&session_id) {
+                    state.current_session = None;
+                    state.current_session_from = None;
+                }
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
-            let mut state = state_ref.write().await;
-            let _ = state
-                .events_tx
-                .try_send(crate::server::events::ServerEvent::SessionDone {
-                    session_id: session_id.clone(),
-                });
-            if state.current_session.as_ref().map(|s| &s.id) == Some(&session_id) {
-                state.current_session = None;
-                state.current_session_from = None;
-            }
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };
     let body_len = body.bytes_written;
@@ -914,6 +928,8 @@ pub(crate) struct CancelParams {
     /// internal until the offer is accepted.
     #[serde(rename = "sessionId")]
     session_id: Option<SessionId>,
+    #[serde(rename = "fileId")]
+    file_id: Option<String>,
 }
 
 pub(crate) async fn handle_cancel(
@@ -923,23 +939,28 @@ pub(crate) async fn handle_cancel(
 ) -> Response {
     let mut state = state_ref.write().await;
 
-    // **Authorized by source IP, not by knowing the session id.** That is what
-    // the official receiver does, and the difference matters on a shared
-    // network: a session id travels in a `prepare-upload` response over plain
-    // HTTP by default, so treating possession of one as authority to cancel
-    // hands the transfer to anybody who watched it go past.
     let peer_ip = peer.ip().to_canonical();
+    let is_local = peer_ip.is_loopback();
     let claimed_by_sender = state
         .current_session_from
         .map(|ip| ip.to_canonical())
         .is_some_and(|reserved_by| reserved_by == peer_ip);
     let auto_accept = state.auto_accept.load(std::sync::atomic::Ordering::Relaxed);
+    let authorized = claimed_by_sender || auto_accept || is_local;
+
+    // Clean up explicit target file_id if provided, regardless of whether session is still active
+    if let Some(target_fid) = params.file_id.clone() {
+        let save_dir = state.save_dir.clone();
+        tokio::spawn(async move {
+            cleanup_partial_files(&save_dir, vec![target_fid]).await;
+        });
+    }
 
     // The sender gave up while somebody was still deciding. It has no session
     // id to name, so not naming one is the request rather than a malformed one.
     if params.session_id.is_none() {
         if let Some(reservation) = state.awaiting_consent.take() {
-            if reservation.from.to_canonical() != peer_ip && !auto_accept {
+            if reservation.from.to_canonical() != peer_ip && !auto_accept && !is_local {
                 state.awaiting_consent = Some(reservation);
                 tracing::warn!("Cancel from {} is not the peer that reserved", peer.ip());
                 return StatusCode::FORBIDDEN.into_response();
@@ -955,7 +976,7 @@ pub(crate) async fn handle_cancel(
             reservation.withdraw.cancel();
             tracing::info!("Sender withdrew its offer before it was answered");
             return StatusCode::OK.into_response();
-        } else if claimed_by_sender || auto_accept {
+        } else if authorized {
             if let Some(session) = &state.current_session {
                 let _ = session.try_cancel_receives();
                 let save_dir = state.save_dir.clone();
@@ -970,7 +991,7 @@ pub(crate) async fn handle_cancel(
                     });
                 state.current_session = None;
                 state.current_session_from = None;
-                tracing::info!("Sender cancelled active session from {}", peer.ip());
+                tracing::info!("Authorized cancel of active session from {}", peer.ip());
             }
             return StatusCode::OK.into_response();
         } else {
@@ -983,7 +1004,7 @@ pub(crate) async fn handle_cancel(
         .clone()
         .expect("the None arm returned above");
 
-    if !claimed_by_sender && !auto_accept && state.current_session_from.is_some() {
+    if !authorized && state.current_session_from.is_some() {
         tracing::warn!("Cancel from {} is not the peer that reserved", peer.ip());
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -1017,7 +1038,7 @@ pub(crate) async fn handle_cancel(
     }
 
     if let Some(session) = &state.current_session
-        && (session.id == session_id || claimed_by_sender || auto_accept)
+        && (session.id == session_id || authorized)
     {
         if !session.try_cancel_receives() {
             tracing::info!(
@@ -1101,6 +1122,21 @@ pub(crate) async fn handle_resume_info(
 }
 
 async fn cleanup_partial_files(save_dir: &std::path::Path, file_ids: Vec<String>) {
+    // Retry loop for Windows file locking in case the file handle takes a brief moment to close
+    for _ in 0..5 {
+        let mut any_failed = false;
+        for file_id in &file_ids {
+            let part_file = save_dir.join(format!(".kirimaja-{}.part", file_id));
+            if part_file.exists() && tokio::fs::remove_file(&part_file).await.is_err() {
+                any_failed = true;
+            }
+        }
+        if !any_failed {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
     let journal_path = save_dir.join(".kirimaja_journal.json");
     let mut journal_modified = false;
     let mut entries = if journal_path.exists() {
@@ -1189,6 +1225,7 @@ mod tests {
             ConnectInfo("10.0.0.9:40000".parse().unwrap()),
             Query(CancelParams {
                 session_id: Some(session_id.clone()),
+                file_id: None,
             }),
         )
         .await;
@@ -1203,6 +1240,7 @@ mod tests {
             ConnectInfo("10.0.0.5:40000".parse().unwrap()),
             Query(CancelParams {
                 session_id: Some(session_id),
+                file_id: None,
             }),
         )
         .await;

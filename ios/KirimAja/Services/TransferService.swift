@@ -8,7 +8,9 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
 
     private var sendTask: Task<Void, Error>?
     private var currentSessionId: String?
+    private var currentFileId: String?
     private var currentTarget: DeviceInfo?
+    private var isExplicitlyCancelled: Bool = false
     private var lastUpdateTime = Date()
     private var lastBytesTransferred: Int64 = 0
     private var currentResumeOffset: Int64 = 0
@@ -43,6 +45,10 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             .replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "=", with: "") ?? UUID().uuidString
         let fileId = String(fileIdRaw.prefix(32))
+
+        self.isExplicitlyCancelled = false
+        self.currentFileId = fileId
+        self.currentTarget = target
 
         // 2. Query KirimAja resume endpoint to check if desktop already has partial bytes
         var resumeOffset: Int64 = 0
@@ -178,8 +184,12 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             }
 
             guard let upHttpResp = uploadResp as? HTTPURLResponse, (200...299).contains(upHttpResp.statusCode) else {
+                let status = (uploadResp as? HTTPURLResponse)?.statusCode ?? 500
+                if status == 409 {
+                    throw NSError(domain: "TransferError", code: 409, userInfo: [NSLocalizedDescriptionKey: "Transfer dibatalkan"])
+                }
                 let bodyStr = String(data: uploadData, encoding: .utf8) ?? ""
-                throw NSError(domain: "TransferError", code: 500, userInfo: [NSLocalizedDescriptionKey: "Gagal mengunggah file ke desktop: \(bodyStr)"])
+                throw NSError(domain: "TransferError", code: status, userInfo: [NSLocalizedDescriptionKey: "Gagal mengunggah file ke desktop: \(bodyStr)"])
             }
 
             // Completed!
@@ -200,7 +210,8 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             }
 
         } catch {
-            let isCancelled = Task.isCancelled || (error as NSError).code == NSURLErrorCancelled
+            let nsErr = error as NSError
+            let isCancelled = self.isExplicitlyCancelled || Task.isCancelled || nsErr.code == NSURLErrorCancelled || nsErr.code == 409
             if !isCancelled {
                 var state = self.activeTransfer
                 state?.isPaused = true
@@ -290,38 +301,50 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
     }
 
     public func cancelTransfer() {
+        self.isExplicitlyCancelled = true
         let sid = self.currentSessionId
+        let fid = self.currentFileId
         let target = self.currentTarget ?? self.activeTransfer?.target
 
-        // 1. Cancel the managed Swift Task
-        sendTask?.cancel()
-        sendTask = nil
+        // 1. Immediately dismiss UI active transfer state
+        self.activeTransfer = nil
 
-        // 2. Abort all active URLSession upload tasks immediately
-        urlSession.getAllTasks { tasks in
-            tasks.forEach { $0.cancel() }
-        }
-
-        // 3. Notify desktop receiver to cancel and release server session
+        // 2. Notify desktop receiver to cancel and delete partial file FIRST before closing upload socket
         if let target = target, let ip = target.ip {
             Task {
                 var urlComponents = URLComponents(string: "\(target.effectiveProtocol)://\(ip):\(target.port)/api/localsend/v2/cancel")
+                var queryItems: [URLQueryItem] = []
                 if let sid = sid {
-                    urlComponents?.queryItems = [URLQueryItem(name: "sessionId", value: sid)]
+                    queryItems.append(URLQueryItem(name: "sessionId", value: sid))
+                }
+                if let fid = fid {
+                    queryItems.append(URLQueryItem(name: "fileId", value: fid))
+                }
+                if !queryItems.isEmpty {
+                    urlComponents?.queryItems = queryItems
                 }
                 if let cancelURL = urlComponents?.url {
                     var cancelReq = URLRequest(url: cancelURL)
                     cancelReq.httpMethod = "POST"
-                    cancelReq.timeoutInterval = 2.0
+                    cancelReq.timeoutInterval = 3.0
                     _ = try? await URLSession.shared.data(for: cancelReq)
-                    print("[TransferService] Sent cancel request to desktop receiver: \(ip)")
+                    print("[TransferService] Sent cancel request to desktop receiver: \(ip), sid: \(sid ?? "none"), fid: \(fid ?? "none")")
                 }
             }
         }
 
+        // 3. Cancel the managed Swift Task
+        sendTask?.cancel()
+        sendTask = nil
+
+        // 4. Abort all active URLSession upload tasks immediately
+        urlSession.getAllTasks { tasks in
+            tasks.forEach { $0.cancel() }
+        }
+
         self.currentSessionId = nil
+        self.currentFileId = nil
         self.currentTarget = nil
-        self.activeTransfer = nil
         BackgroundManager.shared.endTransferBackgroundTask()
         BackgroundManager.shared.updateIdleTimer(isTransferring: false)
     }
