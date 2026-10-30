@@ -887,7 +887,7 @@ pub(crate) async fn handle_upload(
             file_id: params.file_id.clone(),
             file_name: final_file_name,
             path: save_path,
-            size: body_len,
+            size: total_written,
             sender_alias,
             // A real binary upload has no inline text body.
             message_text: None,
@@ -958,6 +958,11 @@ pub(crate) async fn handle_cancel(
         } else if claimed_by_sender || auto_accept {
             if let Some(session) = &state.current_session {
                 let _ = session.try_cancel_receives();
+                let save_dir = state.save_dir.clone();
+                let files_to_clean: Vec<String> = session.files.keys().map(|k| k.0.clone()).collect();
+                tokio::spawn(async move {
+                    cleanup_partial_files(&save_dir, files_to_clean).await;
+                });
                 let _ = state
                     .events_tx
                     .try_send(crate::server::events::ServerEvent::SessionDone {
@@ -1021,6 +1026,11 @@ pub(crate) async fn handle_cancel(
             );
             return StatusCode::CONFLICT.into_response();
         }
+        let save_dir = state.save_dir.clone();
+        let files_to_clean: Vec<String> = session.files.keys().map(|k| k.0.clone()).collect();
+        tokio::spawn(async move {
+            cleanup_partial_files(&save_dir, files_to_clean).await;
+        });
         let _ = state
             .events_tx
             .try_send(crate::server::events::ServerEvent::SessionDone {
@@ -1088,6 +1098,46 @@ pub(crate) async fn handle_resume_info(
         "offset": detected_offset,
     }))
     .into_response()
+}
+
+async fn cleanup_partial_files(save_dir: &std::path::Path, file_ids: Vec<String>) {
+    let journal_path = save_dir.join(".kirimaja_journal.json");
+    let mut journal_modified = false;
+    let mut entries = if journal_path.exists() {
+        if let Ok(data) = tokio::fs::read_to_string(&journal_path).await {
+            serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&data)
+                .unwrap_or_default()
+        } else {
+            std::collections::HashMap::new()
+        }
+    } else {
+        std::collections::HashMap::new()
+    };
+
+    for file_id in file_ids {
+        let part_file = save_dir.join(format!(".kirimaja-{}.part", file_id));
+        let _ = tokio::fs::remove_file(&part_file).await;
+
+        if let Some(entry) = entries.remove(&file_id) {
+            journal_modified = true;
+            if let Some(part_str) = entry.get("part_path").and_then(|v| v.as_str()) {
+                let _ = tokio::fs::remove_file(part_str).await;
+            }
+            if let Some(final_str) = entry.get("final_path").and_then(|v| v.as_str()) {
+                let _ = tokio::fs::remove_file(final_str).await;
+            }
+        }
+    }
+
+    if journal_modified {
+        if let Ok(serialized) = serde_json::to_string_pretty(&entries) {
+            let tmp = journal_path.with_extension("tmp");
+            if tokio::fs::write(&tmp, serialized).await.is_ok() {
+                let _ = tokio::fs::rename(&tmp, &journal_path).await;
+            }
+        }
+    }
+    tracing::info!("Cleaned up cancelled transfer partial files from disk");
 }
 
 #[cfg(test)]

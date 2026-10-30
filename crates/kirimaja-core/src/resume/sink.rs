@@ -83,6 +83,10 @@ impl ReceiveSink for ResumableFileSink {
                     .await
                     .map_err(|e| SinkError::Failed(format!("Failed to open partial file: {e}")))?;
 
+                file.set_len(offset)
+                    .await
+                    .map_err(|e| SinkError::Failed(format!("Failed to truncate partial file to offset {offset}: {e}")))?;
+
                 file.seek(SeekFrom::Start(offset))
                     .await
                     .map_err(|e| SinkError::Failed(format!("Failed to seek to offset {offset}: {e}")))?;
