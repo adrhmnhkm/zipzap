@@ -706,6 +706,9 @@ pub(crate) async fn handle_upload(
         events_tx,
         received_bytes,
     };
+    if resume_offset > 0 {
+        progress.add(resume_offset);
+    }
     let callback_progress = progress.clone();
     let file_reported = Arc::new(AtomicU64::new(0));
     let callback_file_reported = file_reported.clone();
@@ -729,7 +732,7 @@ pub(crate) async fn handle_upload(
     let body = match body_result {
         None => {
             let written = file_reported.load(Ordering::Relaxed);
-            progress.rollback(written);
+            progress.rollback(resume_offset + written);
             tracing::info!(%session_id, "Upload cancelled or interrupted before publication");
             if let Err(cleanup_error) = pending.preserve_partial(resume_offset + written).await {
                 tracing::error!(%cleanup_error, "Failed to preserve partial upload");
@@ -744,7 +747,7 @@ pub(crate) async fn handle_upload(
         Some(Ok(outcome)) => outcome,
         Some(Err(e)) => {
             let written = file_reported.load(Ordering::Relaxed);
-            progress.rollback(written);
+            progress.rollback(resume_offset + written);
             tracing::error!("Failed to save file to {:?}: {}", save_path, e);
             if let Err(cleanup_error) = pending.preserve_partial(resume_offset + written).await {
                 tracing::error!(%cleanup_error, "Failed to preserve partial upload on error");
@@ -769,7 +772,7 @@ pub(crate) async fn handle_upload(
     // sender can retry the same file id against the still-open session.
     let total_written = body_len + resume_offset;
     if total_written != declared_size {
-        progress.rollback(body_len);
+        progress.rollback(total_written);
         tracing::warn!(
             "Upload size mismatch for {:?}: declared {} bytes, received {} (+ offset {}) bytes; preserving partial",
             save_path,
@@ -1029,6 +1032,15 @@ pub(crate) async fn handle_resume_info(
     let save_dir = state.save_dir.clone();
     drop(state);
 
+    let mut detected_offset = 0_u64;
+
+    // 1. Direct check on the disk for .kirimaja-{file_id}.part
+    let direct_part = save_dir.join(format!(".kirimaja-{}.part", params.file_id));
+    if let Ok(meta) = tokio::fs::metadata(&direct_part).await {
+        detected_offset = detected_offset.max(meta.len());
+    }
+
+    // 2. Check the resume journal
     let journal_path = save_dir.join(".kirimaja_journal.json");
     if journal_path.exists() {
         if let Ok(data) = tokio::fs::read_to_string(&journal_path).await {
@@ -1036,23 +1048,29 @@ pub(crate) async fn handle_resume_info(
                 serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&data)
             {
                 if let Some(entry) = entries.get(&params.file_id) {
-                    let offset = entry
-                        .get("bytes_received")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    return Json(serde_json::json!({
-                        "file_id": params.file_id,
-                        "offset": offset,
-                    }))
-                    .into_response();
+                    if let Some(part_str) = entry.get("part_path").and_then(|v| v.as_str()) {
+                        let path = std::path::PathBuf::from(part_str);
+                        if let Ok(meta) = tokio::fs::metadata(&path).await {
+                            detected_offset = detected_offset.max(meta.len());
+                        }
+                    }
+                    if let Some(bytes) = entry.get("bytes_received").and_then(|v| v.as_u64()) {
+                        detected_offset = detected_offset.max(bytes);
+                    }
                 }
             }
         }
     }
 
+    tracing::info!(
+        file_id = %params.file_id,
+        offset = detected_offset,
+        "Resume info requested by client"
+    );
+
     Json(serde_json::json!({
         "file_id": params.file_id,
-        "offset": 0,
+        "offset": detected_offset,
     }))
     .into_response()
 }

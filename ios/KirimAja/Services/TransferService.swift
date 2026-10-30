@@ -48,21 +48,36 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             var checkReq = URLRequest(url: resumeInfoURL)
             checkReq.timeoutInterval = 2.0
             if let (rData, rResp) = try? await URLSession.shared.data(for: checkReq),
-               let httpRResp = rResp as? HTTPURLResponse, httpRResp.statusCode == 200,
-               let json = try? JSONSerialization.jsonObject(with: rData) as? [String: Any],
-               let serverOffset = json["offset"] as? Int64, serverOffset > 0 && serverOffset < fileSize {
-                resumeOffset = serverOffset
-                print("[TransferService] Resume detected! Resuming from offset: \(resumeOffset) bytes")
+               let httpRResp = rResp as? HTTPURLResponse, httpRResp.statusCode == 200 {
+                let respStr = String(data: rData, encoding: .utf8) ?? ""
+                print("[TransferService] resume-info raw response: \(respStr)")
+
+                var parsedOffset: Int64 = 0
+                if let json = try? JSONSerialization.jsonObject(with: rData) as? [String: Any] {
+                    if let num = json["offset"] as? NSNumber {
+                        parsedOffset = num.int64Value
+                    } else if let str = json["offset"] as? String, let val = Int64(str) {
+                        parsedOffset = val
+                    } else if let intVal = json["offset"] as? Int {
+                        parsedOffset = Int64(intVal)
+                    }
+                }
+
+                if parsedOffset > 0 && parsedOffset < fileSize {
+                    resumeOffset = parsedOffset
+                    print("[TransferService] Resume detected! Resuming from offset: \(resumeOffset) bytes (total \(fileSize))")
+                }
             }
         }
 
         self.currentResumeOffset = resumeOffset
+        let initialEta = resumeOffset > 0 ? "Melanjutkan (\(Int((Double(resumeOffset) / Double(fileSize)) * 100))%)..." : "Menghubungkan..."
         self.activeTransfer = ActiveTransferState(
             fileName: fileName,
             bytesTransferred: resumeOffset,
             totalBytes: fileSize,
             speedMBs: 0.0,
-            eta: resumeOffset > 0 ? "Melanjutkan..." : "Menghubungkan...",
+            eta: initialEta,
             isResume: resumeOffset > 0,
             isCompleted: false,
             isPaused: false,
@@ -146,7 +161,7 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             uploadReq.setValue(fileName, forHTTPHeaderField: "X-File-Name")
 
             self.lastUpdateTime = Date()
-            self.lastBytesTransferred = 0
+            self.lastBytesTransferred = resumeOffset
             if resumeOffset > 0 {
                 self.activeTransfer?.eta = "Melanjutkan transfer..."
             }

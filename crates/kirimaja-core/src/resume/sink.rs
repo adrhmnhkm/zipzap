@@ -60,30 +60,51 @@ impl ReceiveSink for ResumableFileSink {
 
         // 1. Resuming existing partial transfer
         if offset > 0 && !file_id.is_empty() {
-            if let Some(entry) = self.journal.get(file_id).await {
+            let direct_part_path = directory.join(format!(".kirimaja-{file_id}.part"));
+            let existing_part = if let Some(entry) = self.journal.get(file_id).await {
                 if tokio::fs::try_exists(&entry.part_path).await.unwrap_or(false) {
-                    let mut file = OpenOptions::new()
-                        .write(true)
-                        .open(&entry.part_path)
-                        .await
-                        .map_err(|e| SinkError::Failed(format!("Failed to open partial file: {e}")))?;
-
-                    file.seek(SeekFrom::Start(offset))
-                        .await
-                        .map_err(|e| SinkError::Failed(format!("Failed to seek to offset {offset}: {e}")))?;
-
-                    return Ok(Box::new(ResumablePendingFile {
-                        file: Some(file),
-                        part_path: entry.part_path,
-                        final_path: entry.final_path,
-                        directory,
-                        file_id: file_id.to_string(),
-                        file_name: file_name.to_string(),
-                        journal: self.journal.clone(),
-                        completed: false,
-                        preserved: false,
-                    }));
+                    Some((entry.part_path, entry.final_path))
+                } else if tokio::fs::try_exists(&direct_part_path).await.unwrap_or(false) {
+                    Some((direct_part_path, entry.final_path))
+                } else {
+                    None
                 }
+            } else if tokio::fs::try_exists(&direct_part_path).await.unwrap_or(false) {
+                let (final_path, _) = reserve_free_name(&directory, &leaf).await?;
+                Some((direct_part_path, final_path))
+            } else {
+                None
+            };
+
+            if let Some((part_path, final_path)) = existing_part {
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .open(&part_path)
+                    .await
+                    .map_err(|e| SinkError::Failed(format!("Failed to open partial file: {e}")))?;
+
+                file.seek(SeekFrom::Start(offset))
+                    .await
+                    .map_err(|e| SinkError::Failed(format!("Failed to seek to offset {offset}: {e}")))?;
+
+                tracing::info!(
+                    file_id,
+                    offset,
+                    part_path = %part_path.display(),
+                    "Successfully opened existing partial file for resume"
+                );
+
+                return Ok(Box::new(ResumablePendingFile {
+                    file: Some(file),
+                    part_path,
+                    final_path,
+                    directory,
+                    file_id: file_id.to_string(),
+                    file_name: file_name.to_string(),
+                    journal: self.journal.clone(),
+                    completed: false,
+                    preserved: false,
+                }));
             }
             tracing::warn!(
                 file_id,
@@ -240,8 +261,21 @@ impl Drop for ResumablePendingFile {
             // Keep partial file and journal intact if unexpectedly dropped,
             // but remove the 0-byte reservation file
             let final_path = self.final_path.clone();
+            let part_path = self.part_path.clone();
+            let journal = self.journal.clone();
+            let file_id = self.file_id.clone();
             tokio::spawn(async move {
                 let _ = tokio::fs::remove_file(&final_path).await;
+                if !file_id.is_empty() {
+                    if let Ok(meta) = tokio::fs::metadata(&part_path).await {
+                        let _ = journal.update_progress(&file_id, meta.len()).await;
+                        tracing::info!(
+                            file_id = %file_id,
+                            bytes_written = meta.len(),
+                            "Updated journal from disk size on connection drop"
+                        );
+                    }
+                }
             });
             tracing::warn!(
                 file_id = %self.file_id,
