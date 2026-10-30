@@ -5,6 +5,7 @@ import UserNotifications
 
 /// Manages iOS background execution to prevent transfers from dropping when the screen is locked
 /// or the user switches apps. Implements PRD Section 3.7 strategy.
+@MainActor
 public class BackgroundManager: ObservableObject {
     public static let shared = BackgroundManager()
 
