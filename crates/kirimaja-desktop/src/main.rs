@@ -143,20 +143,24 @@ fn main() {
                                     "totalBytes": total_bytes,
                                     "speedMBs": current_speed_mbs,
                                     "eta": eta_str,
+                                    "fileCount": file_count,
                                     "isResume": false
                                 }),
                             );
                         }
                         ServerEvent::FileReceived { file_name, .. } => {
-                            last_bytes = 0;
-                            current_speed_mbs = 0.0;
-                            last_progress_time = std::time::Instant::now();
                             let _ = srv_handle.emit(
-                                "transfer-complete",
+                                "file-complete",
                                 serde_json::json!({ "filename": file_name }),
                             );
                         }
                         ServerEvent::SessionDone { .. } => {
+                            last_bytes = 0;
+                            current_speed_mbs = 0.0;
+                            last_progress_time = std::time::Instant::now();
+                            let _ = srv_handle.emit("transfer-complete", serde_json::json!({}));
+                        }
+                        ServerEvent::SessionCancelled { .. } => {
                             last_bytes = 0;
                             current_speed_mbs = 0.0;
                             last_progress_time = std::time::Instant::now();

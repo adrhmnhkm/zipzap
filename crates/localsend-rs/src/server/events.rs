@@ -64,8 +64,12 @@ pub enum ServerEvent {
         /// emitted as [`ServerEvent::TextReceived`].
         message_text: Option<String>,
     },
-    /// All accepted files of a session arrived (or the session was cancelled).
+    /// All accepted files of a session arrived.
     SessionDone {
+        session_id: SessionId,
+    },
+    /// The session was cancelled before completing all files.
+    SessionCancelled {
         session_id: SessionId,
     },
 }

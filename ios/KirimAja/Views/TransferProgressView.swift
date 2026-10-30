@@ -12,6 +12,8 @@ public struct TransferProgressView: View {
     public var isPaused: Bool
     public var errorMessage: String?
     public var canRetry: Bool
+    public var fileCount: Int = 1
+    public var completedFiles: Int = 0
     public var onRetry: () -> Void
     public var onCancel: () -> Void
 
@@ -31,9 +33,21 @@ public struct TransferProgressView: View {
             // Header
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(fileName)
-                        .font(.headline)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        if fileCount > 1 {
+                            Text("\(completedFiles)/\(fileCount) Berkas")
+                                .font(.caption2)
+                                .fontWeight(.bold)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.accentColor.opacity(0.15))
+                                .foregroundColor(.accentColor)
+                                .cornerRadius(6)
+                        }
+                        Text(fileName)
+                            .font(.headline)
+                            .lineLimit(1)
+                    }
 
                     if isResume {
                         HStack(spacing: 4) {
@@ -99,7 +113,7 @@ public struct TransferProgressView: View {
                     Text("Layar Tetap Menyala")
                         .font(.subheadline)
                         .fontWeight(.medium)
-                    Text("Mencegah iOS menidurkan proses transfer file besar.")
+                    Text("Mencegah iOS menidurkan proses transfer berkas besar.")
                         .font(.caption2)
                         .foregroundColor(.secondary)
                 }

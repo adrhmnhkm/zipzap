@@ -112,7 +112,14 @@ function updateUI() {
   // Active Transfer UI
   if (appState.transfer) {
     if (elTransferCard) elTransferCard.style.display = "flex";
-    if (elTransferFilename) elTransferFilename.textContent = appState.transfer.filename;
+    const fileCount = appState.transfer.fileCount || 1;
+    if (elTransferFilename) {
+      if (fileCount > 1) {
+        elTransferFilename.textContent = `${appState.transfer.filename} (${fileCount} berkas)`;
+      } else {
+        elTransferFilename.textContent = appState.transfer.filename;
+      }
+    }
     if (elResumeBadge) elResumeBadge.style.display = appState.transfer.isResume ? "inline-block" : "none";
 
     const percent = Math.round((appState.transfer.bytesReceived / appState.transfer.totalBytes) * 100) || 0;

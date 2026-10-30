@@ -431,7 +431,7 @@ async fn handle_standard_prepare_upload(
 
         let _ = state
             .events_tx
-            .try_send(crate::server::events::ServerEvent::SessionDone {
+            .try_send(crate::server::events::ServerEvent::SessionCancelled {
                 session_id: session_id.clone(),
             });
 
@@ -741,7 +741,7 @@ pub(crate) async fn handle_upload(
             let mut state = state_ref.write().await;
             let _ = state
                 .events_tx
-                .try_send(crate::server::events::ServerEvent::SessionDone {
+                .try_send(crate::server::events::ServerEvent::SessionCancelled {
                     session_id: session_id.clone(),
                 });
             if state.current_session.as_ref().map(|s| &s.id) == Some(&session_id) {
@@ -762,7 +762,7 @@ pub(crate) async fn handle_upload(
                 let mut state = state_ref.write().await;
                 let _ = state
                     .events_tx
-                    .try_send(crate::server::events::ServerEvent::SessionDone {
+                    .try_send(crate::server::events::ServerEvent::SessionCancelled {
                         session_id: session_id.clone(),
                     });
                 if state.current_session.as_ref().map(|s| &s.id) == Some(&session_id) {
@@ -986,7 +986,7 @@ pub(crate) async fn handle_cancel(
                 });
                 let _ = state
                     .events_tx
-                    .try_send(crate::server::events::ServerEvent::SessionDone {
+                    .try_send(crate::server::events::ServerEvent::SessionCancelled {
                         session_id: session.id.clone(),
                     });
                 state.current_session = None;
@@ -1054,7 +1054,7 @@ pub(crate) async fn handle_cancel(
         });
         let _ = state
             .events_tx
-            .try_send(crate::server::events::ServerEvent::SessionDone {
+            .try_send(crate::server::events::ServerEvent::SessionCancelled {
                 session_id: session_id.clone(),
             });
         state.current_session = None;

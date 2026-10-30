@@ -141,7 +141,8 @@ pub async fn execute(command: ReceiveCommand) -> anyhow::Result<()> {
                     println!("Browser download request from {}", request.ip());
                 }
                 crate::server::ServerEvent::WebShareDownloadProgress { .. }
-                | crate::server::ServerEvent::WebShareSessionDone { .. } => {}
+                | crate::server::ServerEvent::WebShareSessionDone { .. }
+                | crate::server::ServerEvent::SessionCancelled { .. } => {}
                 crate::server::ServerEvent::FileReceiveProgress {
                     file_name,
                     bytes_received,

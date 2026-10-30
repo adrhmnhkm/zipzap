@@ -106,11 +106,14 @@ public struct ActiveTransferState: Identifiable, Sendable {
     public var isPaused: Bool = false
     public var errorMessage: String? = nil
     public var canRetry: Bool = false
+    public var fileCount: Int = 1
+    public var completedFiles: Int = 0
 
     // Context for resuming
     public var fileURL: URL? = nil
     public var fileType: String? = nil
     public var target: DeviceInfo? = nil
+    public var batchFiles: [OutgoingFile] = []
 
     public init(
         fileName: String,
@@ -125,7 +128,10 @@ public struct ActiveTransferState: Identifiable, Sendable {
         canRetry: Bool = false,
         fileURL: URL? = nil,
         fileType: String? = nil,
-        target: DeviceInfo? = nil
+        target: DeviceInfo? = nil,
+        fileCount: Int = 1,
+        completedFiles: Int = 0,
+        batchFiles: [OutgoingFile] = []
     ) {
         self.fileName = fileName
         self.bytesTransferred = bytesTransferred
@@ -140,5 +146,24 @@ public struct ActiveTransferState: Identifiable, Sendable {
         self.fileURL = fileURL
         self.fileType = fileType
         self.target = target
+        self.fileCount = fileCount
+        self.completedFiles = completedFiles
+        self.batchFiles = batchFiles
+    }
+}
+
+public struct OutgoingFile: Identifiable, Equatable, Hashable, Sendable {
+    public let id: String
+    public let fileURL: URL
+    public let fileName: String
+    public let fileSize: Int64
+    public let fileType: String
+
+    public init(id: String, fileURL: URL, fileName: String, fileSize: Int64, fileType: String) {
+        self.id = id
+        self.fileURL = fileURL
+        self.fileName = fileName
+        self.fileSize = fileSize
+        self.fileType = fileType
     }
 }

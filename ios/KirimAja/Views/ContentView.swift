@@ -74,6 +74,8 @@ public struct ContentView: View {
                         isPaused: active.isPaused,
                         errorMessage: active.errorMessage,
                         canRetry: active.canRetry,
+                        fileCount: active.fileCount,
+                        completedFiles: active.completedFiles,
                         onRetry: {
                             transfer.resumeActiveTransfer()
                         },
@@ -157,14 +159,8 @@ public struct ContentView: View {
             }
             .navigationBarHidden(true)
             .sheet(item: $selectedDevice) { target in
-                SendView(targetDevice: target) { fileURL, fileName, fileSize, mimeType in
-                    transfer.startSending(
-                        fileURL: fileURL,
-                        fileName: fileName,
-                        fileSize: fileSize,
-                        fileType: mimeType,
-                        target: target
-                    )
+                SendView(targetDevice: target) { files in
+                    transfer.startSendingBatch(files: files, target: target)
                 }
             }
             .sheet(isPresented: $showManualIPDialog) {
