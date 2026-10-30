@@ -9,6 +9,7 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
     private var currentTask: URLSessionUploadTask?
     private var lastUpdateTime = Date()
     private var lastBytesTransferred: Int64 = 0
+    private var currentResumeOffset: Int64 = 0
     private var urlSession: URLSession!
 
     override private init() {
@@ -34,18 +35,39 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
         bgManager.beginTransferBackgroundTask(description: "Kirim \(fileName)")
         bgManager.updateIdleTimer(isTransferring: true)
 
+        // 1. Generate deterministic fileId based on fileName and fileSize
+        let fileIdRaw = "\(fileName)_\(fileSize)".data(using: .utf8)?.base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "=", with: "") ?? UUID().uuidString
+        let fileId = String(fileIdRaw.prefix(32))
+
+        // 2. Query KirimAja resume endpoint to see if the desktop already has a partial transfer
+        var resumeOffset: Int64 = 0
+        if let resumeInfoURL = URL(string: "\(target.effectiveProtocol)://\(targetIP):\(target.port)/api/kirimaja/v1/resume-info?file_id=\(fileId)") {
+            var checkReq = URLRequest(url: resumeInfoURL)
+            checkReq.timeoutInterval = 2.0
+            if let (rData, rResp) = try? await URLSession.shared.data(for: checkReq),
+               let httpRResp = rResp as? HTTPURLResponse, httpRResp.statusCode == 200,
+               let json = try? JSONSerialization.jsonObject(with: rData) as? [String: Any],
+               let serverOffset = json["offset"] as? Int64, serverOffset > 0 && serverOffset < fileSize {
+                resumeOffset = serverOffset
+                print("[TransferService] Resume detected! Resuming from offset: \(resumeOffset) bytes")
+            }
+        }
+
+        self.currentResumeOffset = resumeOffset
         self.activeTransfer = ActiveTransferState(
             fileName: fileName,
-            bytesTransferred: 0,
+            bytesTransferred: resumeOffset,
             totalBytes: fileSize,
             speedMBs: 0.0,
-            eta: "Menghubungkan...",
-            isResume: false
+            eta: resumeOffset > 0 ? "Melanjutkan..." : "Menghubungkan...",
+            isResume: resumeOffset > 0
         )
 
         do {
-            // 1. Prepare Upload Request
-            let fileId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            // 3. Prepare Upload Request
             let meta = FileMetadata(
                 id: fileId,
                 fileName: fileName,
@@ -75,18 +97,27 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
                 throw NSError(domain: "TransferError", code: 500, userInfo: [NSLocalizedDescriptionKey: "Token file tidak ditemukan dari penerima"])
             }
 
-            // 2. Upload file stream
+            // 4. Create slice if resuming from offset
+            let uploadSourceURL = try createUploadSlice(from: fileURL, startingAt: resumeOffset, fileName: fileName)
+
+            // 5. Upload file stream
             let uploadURL = URL(string: "\(target.effectiveProtocol)://\(targetIP):\(target.port)/api/localsend/v2/upload?sessionId=\(prepResponse.sessionId)&fileId=\(fileId)&token=\(token)")!
             var uploadReq = URLRequest(url: uploadURL)
             uploadReq.httpMethod = "POST"
             uploadReq.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
-            uploadReq.setValue("0", forHTTPHeaderField: "X-KirimAja-Resume-Offset")
+            uploadReq.setValue("\(resumeOffset)", forHTTPHeaderField: "X-KirimAja-Resume-Offset")
             uploadReq.setValue(fileName, forHTTPHeaderField: "X-File-Name")
 
             self.lastUpdateTime = Date()
             self.lastBytesTransferred = 0
 
-            let (uploadData, uploadResp) = try await self.urlSession.upload(for: uploadReq, fromFile: fileURL)
+            let (uploadData, uploadResp) = try await self.urlSession.upload(for: uploadReq, fromFile: uploadSourceURL)
+
+            // Cleanup slice file if created
+            if uploadSourceURL != fileURL {
+                try? FileManager.default.removeItem(at: uploadSourceURL)
+            }
+
             guard let upHttpResp = uploadResp as? HTTPURLResponse, (200...299).contains(upHttpResp.statusCode) else {
                 let bodyStr = String(data: uploadData, encoding: .utf8) ?? ""
                 throw NSError(domain: "TransferError", code: 500, userInfo: [NSLocalizedDescriptionKey: "Gagal mengunggah file ke desktop: \(bodyStr)"])
@@ -98,8 +129,8 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             bgManager.endTransferBackgroundTask()
             bgManager.updateIdleTimer(isTransferring: false)
 
-            // Auto-clear success after 3.5 seconds
-            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            // Auto-clear success card after 3 seconds
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
             if self.activeTransfer?.isCompleted == true {
                 self.activeTransfer = nil
             }
@@ -110,6 +141,32 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             bgManager.updateIdleTimer(isTransferring: false)
             throw error
         }
+    }
+
+    private func createUploadSlice(from sourceURL: URL, startingAt offset: Int64, fileName: String) throws -> URL {
+        guard offset > 0 else { return sourceURL }
+
+        let sliceURL = FileManager.default.temporaryDirectory.appendingPathComponent("slice_\(offset)_\(fileName)")
+        if FileManager.default.fileExists(atPath: sliceURL.path) {
+            try? FileManager.default.removeItem(at: sliceURL)
+        }
+
+        let fileHandle = try FileHandle(forReadingFrom: sourceURL)
+        defer { try? fileHandle.close() }
+        try fileHandle.seek(toOffset: UInt64(offset))
+
+        FileManager.default.createFile(atPath: sliceURL.path, contents: nil)
+        let writeHandle = try FileHandle(forWritingTo: sliceURL)
+        defer { try? writeHandle.close() }
+
+        let chunkSize = 1024 * 1024 // 1MB buffer
+        while true {
+            let chunk = try fileHandle.read(upToCount: chunkSize) ?? Data()
+            if chunk.isEmpty { break }
+            try writeHandle.write(contentsOf: chunk)
+        }
+
+        return sliceURL
     }
 
     public func cancelTransfer() {
@@ -131,15 +188,16 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
         Task { @MainActor in
             guard var state = self.activeTransfer else { return }
 
+            let effectiveBytesTransferred = self.currentResumeOffset + totalBytesSent
             let now = Date()
             let timeDiff = now.timeIntervalSince(self.lastUpdateTime)
 
-            if timeDiff >= 0.3 || totalBytesSent >= state.totalBytes {
-                let bytesDiff = totalBytesSent - self.lastBytesTransferred
+            if timeDiff >= 0.3 || effectiveBytesTransferred >= state.totalBytes {
+                let bytesDiff = effectiveBytesTransferred - self.lastBytesTransferred
                 let speedBytesSec = timeDiff > 0 ? Double(bytesDiff) / timeDiff : 0.0
                 let speedMBs = speedBytesSec / (1024.0 * 1024.0)
 
-                let remainingBytes = max(0, state.totalBytes - totalBytesSent)
+                let remainingBytes = max(0, state.totalBytes - effectiveBytesTransferred)
                 let etaSecs = speedBytesSec > 1024 ? Int(Double(remainingBytes) / speedBytesSec) : 0
 
                 let etaStr: String
@@ -151,13 +209,13 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
                     etaStr = "\(etaSecs / 60)m \(etaSecs % 60)d"
                 }
 
-                state.bytesTransferred = totalBytesSent
+                state.bytesTransferred = effectiveBytesTransferred
                 state.speedMBs = speedMBs
                 state.eta = etaStr
 
                 self.activeTransfer = state
                 self.lastUpdateTime = now
-                self.lastBytesTransferred = totalBytesSent
+                self.lastBytesTransferred = effectiveBytesTransferred
             }
         }
     }
