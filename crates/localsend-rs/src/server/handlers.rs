@@ -264,10 +264,15 @@ async fn handle_standard_prepare_upload(
                     tracing::warn!("Timed-out session is publishing a file; rejecting replacement");
                     return StatusCode::CONFLICT.into_response();
                 }
-            } else if state.current_session_from == Some(peer.ip()) {
-                // If the same peer reconnects after a disconnect or screen lock, release the stale session
+            } else if state
+                .current_session_from
+                .map(|ip| ip.to_canonical())
+                == Some(peer.ip().to_canonical())
+                || state.auto_accept.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                // In auto_accept mode or if same peer reconnects after disconnect, release stale session
                 if session.try_cancel_receives() {
-                    tracing::info!(%peer, "Same peer reconnected; releasing stale session for resume/retry");
+                    tracing::info!(%peer, "Releasing stale session for incoming/resuming transfer");
                     state.current_session = None;
                     state.current_session_from = None;
                 } else {
@@ -910,15 +915,18 @@ pub(crate) async fn handle_cancel(
     // network: a session id travels in a `prepare-upload` response over plain
     // HTTP by default, so treating possession of one as authority to cancel
     // hands the transfer to anybody who watched it go past.
+    let peer_ip = peer.ip().to_canonical();
     let claimed_by_sender = state
         .current_session_from
-        .is_some_and(|reserved_by| reserved_by == peer.ip());
+        .map(|ip| ip.to_canonical())
+        .is_some_and(|reserved_by| reserved_by == peer_ip);
+    let auto_accept = state.auto_accept.load(std::sync::atomic::Ordering::Relaxed);
 
     // The sender gave up while somebody was still deciding. It has no session
     // id to name, so not naming one is the request rather than a malformed one.
     if params.session_id.is_none() {
         if let Some(reservation) = state.awaiting_consent.take() {
-            if reservation.from != peer.ip() {
+            if reservation.from.to_canonical() != peer_ip && !auto_accept {
                 state.awaiting_consent = Some(reservation);
                 tracing::warn!("Cancel from {} is not the peer that reserved", peer.ip());
                 return StatusCode::FORBIDDEN.into_response();
@@ -934,7 +942,7 @@ pub(crate) async fn handle_cancel(
             reservation.withdraw.cancel();
             tracing::info!("Sender withdrew its offer before it was answered");
             return StatusCode::OK.into_response();
-        } else if claimed_by_sender {
+        } else if claimed_by_sender || auto_accept {
             if let Some(session) = &state.current_session {
                 let _ = session.try_cancel_receives();
                 state.current_session = None;
@@ -952,7 +960,7 @@ pub(crate) async fn handle_cancel(
         .clone()
         .expect("the None arm returned above");
 
-    if !claimed_by_sender && state.current_session_from.is_some() {
+    if !claimed_by_sender && !auto_accept && state.current_session_from.is_some() {
         tracing::warn!("Cancel from {} is not the peer that reserved", peer.ip());
         return StatusCode::FORBIDDEN.into_response();
     }
@@ -986,7 +994,7 @@ pub(crate) async fn handle_cancel(
     }
 
     if let Some(session) = &state.current_session
-        && (session.id == session_id || claimed_by_sender)
+        && (session.id == session_id || claimed_by_sender || auto_accept)
     {
         if !session.try_cancel_receives() {
             tracing::info!(

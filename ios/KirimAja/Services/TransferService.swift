@@ -95,18 +95,18 @@ public class TransferService: NSObject, ObservableObject, URLSessionTaskDelegate
             req.timeoutInterval = 10.0
 
             var prepareData: Data?
-            for attempt in 1...2 {
+            for attempt in 1...3 {
                 let (pData, pResp) = try await URLSession.shared.data(for: req)
                 if let httpResp = pResp as? HTTPURLResponse {
-                    if httpResp.statusCode == 409 && attempt == 1 {
-                        print("[TransferService] Desktop returned 409 Conflict. Clearing stale session on desktop...")
+                    if httpResp.statusCode == 409 && attempt < 3 {
+                        print("[TransferService] Desktop returned 409 Conflict. Clearing stale session on desktop (attempt \(attempt))...")
                         if let cancelURL = URL(string: "\(target.effectiveProtocol)://\(targetIP):\(target.port)/api/localsend/v2/cancel") {
                             var cancelReq = URLRequest(url: cancelURL)
                             cancelReq.httpMethod = "POST"
                             cancelReq.timeoutInterval = 3.0
                             _ = try? await URLSession.shared.data(for: cancelReq)
                         }
-                        try await Task.sleep(nanoseconds: 500_000_000)
+                        try await Task.sleep(nanoseconds: 600_000_000)
                         continue
                     }
 
